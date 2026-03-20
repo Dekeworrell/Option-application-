@@ -380,9 +380,17 @@ async def get_list_quotes(
 
     client = RESTClient(settings.polygon_api_key)
 
-    results = list(await asyncio.gather(
-        *[_fetch_single_quote(client, t.symbol.upper()) for t in tickers]
-    ))
+# Batch requests to avoid Polygon rate limits
+    all_results = []
+    batch_size = 10
+    ticker_symbols = [t.symbol.upper() for t in tickers]
+    for i in range(0, len(ticker_symbols), batch_size):
+        batch = ticker_symbols[i:i + batch_size]
+        batch_results = await asyncio.gather(
+            *[_fetch_single_quote(client, symbol) for symbol in batch]
+        )
+        all_results.extend(batch_results)
+    results = all_results
 
     response_data = {
         "list_id": list_id,
