@@ -541,6 +541,12 @@ async def get_list_quotes(
     client = RESTClient(settings.polygon_api_key)
     results = []
 
+    # Use dynamic dates — today and 7 days back to ensure we always get recent bars
+    from datetime import date, timedelta
+    today = date.today()
+    date_from = (today - timedelta(days=7)).isoformat()
+    date_to = today.isoformat()
+
     for ticker in tickers:
         symbol = ticker.symbol.upper()
 
@@ -559,10 +565,26 @@ async def get_list_quotes(
                     symbol,
                 )
 
-                if snapshot and getattr(snapshot, "day", None):
-                    day = snapshot.day
-                    prev_close = getattr(day, "prev_close", None)
-                    close = getattr(day, "close", None)
+                if snapshot:
+                    # Try day.close first, then last_trade, then last_quote
+                    day = getattr(snapshot, "day", None)
+                    prev_day = getattr(snapshot, "prev_day", None)
+
+                    close = None
+                    prev_close = None
+
+                    if day:
+                        close = getattr(day, "close", None) or getattr(day, "c", None)
+
+                    # prev_day is the correct field for previous close on Polygon
+                    if prev_day:
+                        prev_close = getattr(prev_day, "close", None) or getattr(prev_day, "c", None)
+
+                    # Fallback: try last_trade for current price
+                    if close is None:
+                        last_trade = getattr(snapshot, "last_trade", None)
+                        if last_trade:
+                            close = getattr(last_trade, "price", None) or getattr(last_trade, "p", None)
 
                     if close is not None:
                         last_price = float(close)
@@ -573,8 +595,8 @@ async def get_list_quotes(
                             (float(close) - float(prev_close)) / float(prev_close)
                         ) * 100
 
-                if snapshot and getattr(snapshot, "updated", None):
-                    updated_at = str(snapshot.updated)
+                    if getattr(snapshot, "updated", None):
+                        updated_at = str(snapshot.updated)
 
             except Exception as snapshot_error:
                 snapshot_text = str(snapshot_error)
@@ -582,38 +604,35 @@ async def get_list_quotes(
                 if "429" in snapshot_text:
                     status = "error"
                     error = "Rate limited"
-                elif "NOT_AUTHORIZED" in snapshot_text or "not entitled" in snapshot_text.lower():
+                else:
+                    # Fallback to daily bars with dynamic dates
                     try:
                         aggs = await run_in_threadpool(
                             client.get_aggs,
                             symbol,
                             1,
                             "day",
-                            "2026-03-13",
-                            "2026-03-14",
+                            date_from,
+                            date_to,
                             adjusted=True,
                             sort="desc",
-                            limit=2,
+                            limit=5,
                         )
 
                         bars = list(aggs or [])
 
                         if bars:
-                            latest_bar = bars[-1]
-                            prev_bar = bars[-2] if len(bars) >= 2 else None
+                            latest_bar = bars[0]
+                            prev_bar = bars[1] if len(bars) >= 2 else None
 
-                            latest_close = getattr(latest_bar, "close", None)
-                            if latest_close is None:
-                                latest_close = getattr(latest_bar, "c", None)
+                            latest_close = getattr(latest_bar, "close", None) or getattr(latest_bar, "c", None)
 
                             if latest_close is not None:
                                 last_price = float(latest_close)
 
                             prev_close = None
                             if prev_bar is not None:
-                                prev_close = getattr(prev_bar, "close", None)
-                                if prev_close is None:
-                                    prev_close = getattr(prev_bar, "c", None)
+                                prev_close = getattr(prev_bar, "close", None) or getattr(prev_bar, "c", None)
 
                             if last_price is not None and prev_close not in (None, 0):
                                 change = float(last_price) - float(prev_close)
@@ -621,10 +640,7 @@ async def get_list_quotes(
                                     (float(last_price) - float(prev_close)) / float(prev_close)
                                 ) * 100
 
-                            bar_ts = getattr(latest_bar, "timestamp", None)
-                            if bar_ts is None:
-                                bar_ts = getattr(latest_bar, "t", None)
-
+                            bar_ts = getattr(latest_bar, "timestamp", None) or getattr(latest_bar, "t", None)
                             if bar_ts is not None:
                                 try:
                                     updated_at = datetime.fromtimestamp(bar_ts / 1000).isoformat()
@@ -635,18 +651,11 @@ async def get_list_quotes(
                             error = "Fallback daily data"
                         else:
                             status = "error"
-                            error = "No fallback quote data available"
+                            error = "No quote data available"
                     except Exception as agg_error:
                         agg_text = str(agg_error)
-                        if "429" in agg_text:
-                            status = "error"
-                            error = "Rate limited"
-                        else:
-                            status = "error"
-                            error = agg_text
-                else:
-                    status = "error"
-                    error = snapshot_text
+                        status = "error"
+                        error = "Rate limited" if "429" in agg_text else agg_text
 
             results.append(
                 {
@@ -694,13 +703,7 @@ async def get_list_quotes(
     if cached:
         stale_data = deepcopy(cached["data"])
         for row in stale_data.get("quotes", []):
-            if row.get("status") == "ok":
-                row["status"] = "cached"
-                row["error"] = "Using cached data"
-            elif row.get("status") == "delayed":
-                row["error"] = "Using cached fallback data"
-            else:
-                row["error"] = "Using cached data"
+            row["error"] = "Using cached data"
         return stale_data
 
     return response_data
