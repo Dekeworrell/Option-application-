@@ -10,9 +10,9 @@ from app.services.polygon_client import PolygonClient
 
 router = APIRouter()
 
-UNDERLYING_CACHE_TTL_SECONDS = 60
-OPTION_CHAIN_CACHE_TTL_SECONDS = 60
-OPTION_PREV_CLOSE_CACHE_TTL_SECONDS = 300  # 5 minutes
+UNDERLYING_CACHE_TTL_SECONDS = 300      # 5 minutes
+OPTION_CHAIN_CACHE_TTL_SECONDS = 300    # 5 minutes
+OPTION_PREV_CLOSE_CACHE_TTL_SECONDS = 600  # 10 minutes
 
 _underlying_cache: dict[str, tuple[datetime, float]] = {}
 _option_chain_cache: dict[str, tuple[datetime, list[dict[str, Any]]]] = {}
