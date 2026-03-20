@@ -80,26 +80,47 @@ def _to_scan_result_out(sr: ScanResult, symbol: str) -> ScanResultHistoryOut:
     )
 
 
-async def _fetch_single_quote(client: RESTClient, symbol: str) -> dict:
+async def _fetch_quotes_bulk(client: RESTClient, symbols: list[str]) -> dict[str, dict]:
+    """
+    Fetch quotes for all symbols in a single Polygon bulk snapshot call.
+    Returns a dict keyed by symbol.
+    """
     today = date.today()
     date_from = (today - timedelta(days=7)).isoformat()
     date_to = today.isoformat()
 
-    last_price = None
-    change = None
-    change_percent = None
-    updated_at = None
-    status = "ok"
-    error = None
+    results: dict[str, dict] = {}
+
+    # Initialize all symbols with error state
+    for symbol in symbols:
+        results[symbol] = {
+            "symbol": symbol,
+            "last_price": None,
+            "change": None,
+            "change_percent": None,
+            "updated_at": None,
+            "status": "error",
+            "error": "No data",
+        }
 
     try:
-        snapshot = await run_in_threadpool(
-            client.get_snapshot_ticker,
+        # Single bulk call for all tickers
+        snapshots = await run_in_threadpool(
+            client.get_snapshot_all_tickers,
             "stocks",
-            symbol,
+            tickers=symbols,
         )
 
-        if snapshot:
+        try:
+            snapshot_list = list(snapshots) if snapshots is not None else []
+        except Exception:
+            snapshot_list = []
+
+        for snapshot in snapshot_list:
+            symbol = getattr(snapshot, "ticker", None)
+            if not symbol or symbol not in results:
+                continue
+
             day = getattr(snapshot, "day", None)
             prev_day = getattr(snapshot, "prev_day", None)
 
@@ -116,23 +137,33 @@ async def _fetch_single_quote(client: RESTClient, symbol: str) -> dict:
                 if last_trade:
                     close = getattr(last_trade, "price", None) or getattr(last_trade, "p", None)
 
-            if close is not None:
-                last_price = float(close)
+            last_price = float(close) if close is not None else None
+            change = None
+            change_percent = None
 
             if close is not None and prev_close not in (None, 0):
                 change = float(close) - float(prev_close)
-                change_percent = ((float(close) - float(prev_close)) / float(prev_close)) * 100
+                change_percent = (float(close) - float(prev_close)) / float(prev_close) * 100
 
+            updated_at = None
             if getattr(snapshot, "updated", None):
                 updated_at = str(snapshot.updated)
 
-    except Exception as snapshot_error:
-        snapshot_text = str(snapshot_error)
+            results[symbol] = {
+                "symbol": symbol,
+                "last_price": last_price,
+                "change": change,
+                "change_percent": change_percent,
+                "updated_at": updated_at,
+                "status": "ok" if last_price is not None else "error",
+                "error": None if last_price is not None else "No price data",
+            }
 
-        if "429" in snapshot_text:
-            status = "error"
-            error = "Rate limited"
-        else:
+    except Exception as bulk_error:
+        bulk_text = str(bulk_error)
+
+        # Fallback: fetch daily bars for all symbols concurrently
+        async def _fallback_single(symbol: str) -> tuple[str, dict]:
             try:
                 aggs = await run_in_threadpool(
                     client.get_aggs,
@@ -146,45 +177,74 @@ async def _fetch_single_quote(client: RESTClient, symbol: str) -> dict:
                     prev_bar = bars[1] if len(bars) >= 2 else None
 
                     latest_close = getattr(latest_bar, "close", None) or getattr(latest_bar, "c", None)
-                    if latest_close is not None:
-                        last_price = float(latest_close)
+                    last_price = float(latest_close) if latest_close is not None else None
 
                     prev_close = None
                     if prev_bar is not None:
                         prev_close = getattr(prev_bar, "close", None) or getattr(prev_bar, "c", None)
 
+                    change = None
+                    change_percent = None
                     if last_price is not None and prev_close not in (None, 0):
                         change = float(last_price) - float(prev_close)
-                        change_percent = ((float(last_price) - float(prev_close)) / float(prev_close)) * 100
+                        change_percent = (float(last_price) - float(prev_close)) / float(prev_close) * 100
 
                     bar_ts = getattr(latest_bar, "timestamp", None) or getattr(latest_bar, "t", None)
+                    updated_at = None
                     if bar_ts is not None:
                         try:
                             updated_at = datetime.fromtimestamp(bar_ts / 1000).isoformat()
                         except Exception:
                             updated_at = str(bar_ts)
 
-                    status = "delayed"
-                    error = "Fallback daily data"
+                    return symbol, {
+                        "symbol": symbol,
+                        "last_price": last_price,
+                        "change": change,
+                        "change_percent": change_percent,
+                        "updated_at": updated_at,
+                        "status": "delayed",
+                        "error": "Fallback daily data",
+                    }
                 else:
-                    status = "error"
-                    error = "No quote data available"
+                    return symbol, {
+                        "symbol": symbol,
+                        "last_price": None,
+                        "change": None,
+                        "change_percent": None,
+                        "updated_at": None,
+                        "status": "error",
+                        "error": "No data available",
+                    }
+            except Exception as e:
+                return symbol, {
+                    "symbol": symbol,
+                    "last_price": None,
+                    "change": None,
+                    "change_percent": None,
+                    "updated_at": None,
+                    "status": "error",
+                    "error": str(e),
+                }
 
-            except Exception as agg_error:
-                agg_text = str(agg_error)
-                status = "error"
-                error = "Rate limited" if "429" in agg_text else agg_text
+        # Run fallback concurrently in batches of 10
+        fallback_results = []
+        for i in range(0, len(symbols), 10):
+            batch = symbols[i:i + 10]
+            batch_results = await asyncio.gather(*[_fallback_single(s) for s in batch])
+            fallback_results.extend(batch_results)
+            if i + 10 < len(symbols):
+                        await asyncio.sleep(2)
 
-    return {
-        "symbol": symbol,
-        "last_price": last_price,
-        "change": change,
-        "change_percent": change_percent,
-        "updated_at": updated_at,
-        "status": status,
-        "error": error,
-    }
+        for symbol, data in fallback_results:
+            results[symbol] = data
 
+    return results
+
+
+# -------------------------------------------------
+# Lists
+# -------------------------------------------------
 
 @router.post("", response_model=ListOut, summary="Create a list")
 def create_list(
@@ -316,6 +376,10 @@ def get_default_preset(
     return get_preset(db, current_user.id, lst.default_preset_id)
 
 
+# -------------------------------------------------
+# Tickers
+# -------------------------------------------------
+
 @router.post("/{list_id}/tickers", response_model=TickerOut, summary="Add ticker to list")
 def add_ticker(
     list_id: int,
@@ -357,6 +421,10 @@ def get_tickers(
     )
 
 
+# -------------------------------------------------
+# Quotes — single bulk snapshot call
+# -------------------------------------------------
+
 @router.get("/{list_id}/quotes")
 async def get_list_quotes(
     list_id: int,
@@ -378,19 +446,16 @@ async def get_list_quotes(
         .all()
     )
 
-    client = RESTClient(settings.polygon_api_key)
+    if not tickers:
+        return {"list_id": list_id, "count": 0, "quotes": []}
 
-# Batch requests to avoid Polygon rate limits
-    all_results = []
-    batch_size = 10
-    ticker_symbols = [t.symbol.upper() for t in tickers]
-    for i in range(0, len(ticker_symbols), batch_size):
-        batch = ticker_symbols[i:i + batch_size]
-        batch_results = await asyncio.gather(
-            *[_fetch_single_quote(client, symbol) for symbol in batch]
-        )
-        all_results.extend(batch_results)
-    results = all_results
+    client = RESTClient(settings.polygon_api_key)
+    symbols = [t.symbol.upper() for t in tickers]
+
+    quotes_by_symbol = await _fetch_quotes_bulk(client, symbols)
+
+    # Return in same order as tickers
+    results = [quotes_by_symbol[symbol] for symbol in symbols if symbol in quotes_by_symbol]
 
     response_data = {
         "list_id": list_id,
@@ -415,6 +480,10 @@ async def get_list_quotes(
 
     return response_data
 
+
+# -------------------------------------------------
+# Scan
+# -------------------------------------------------
 
 @router.post("/{list_id}/scan/run", response_model=ScanRunResponse, summary="Run scan for list")
 async def run_scan(
