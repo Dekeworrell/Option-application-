@@ -106,7 +106,7 @@ async def _fetch_quotes_bulk(client: RESTClient, symbols: list[str]) -> dict[str
     try:
         # Single bulk call for all tickers
         snapshots = await run_in_threadpool(
-            client.get_snapshot_all_tickers,
+            client.list_snapshot_all_tickers,
             "stocks",
             tickers=symbols,
         )
