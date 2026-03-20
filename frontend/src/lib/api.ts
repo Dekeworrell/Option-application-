@@ -18,7 +18,19 @@ export function clearToken() {
 }
 
 export function isLoggedIn(): boolean {
-  return !!getToken();
+  const token = getToken();
+  if (!token) return false;
+  try {
+    const payload = JSON.parse(atob(token.split(".")[1]));
+    const exp = payload.exp;
+    if (exp && Date.now() / 1000 > exp) {
+      localStorage.removeItem("token");
+      return false;
+    }
+    return true;
+  } catch {
+    return !!token;
+  }
 }
 
 function getAuthHeaders(): HeadersInit {
