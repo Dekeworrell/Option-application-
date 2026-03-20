@@ -15,7 +15,6 @@ import {
   login,
   saveToken,
   updateList,
-  type PolygonOptionQueryParams,
   type PolygonResolvedOption,
   type TickerItem,
   type Watchlist,
@@ -595,6 +594,13 @@ function WatchlistsWorkspacePage({
     }
   }
 
+  // ============================================================
+  // PATCH: Replace the loadOptionsForSymbols function in App.tsx
+  // Find the existing function:
+  //   async function loadOptionsForSymbols(symbols: string[]) {
+  // and replace the ENTIRE function with this:
+  // ============================================================
+
   async function loadOptionsForSymbols(symbols: string[]) {
     const requestId = ++optionsRequestIdRef.current;
 
@@ -609,126 +615,109 @@ function WatchlistsWorkspacePage({
     setOptionsError("");
 
     try {
-      const queryParams: PolygonOptionQueryParams = {
+      const body = {
+        symbols,
         expiryScope: optionsControls.expiryScope,
         horizonMode: optionsControls.horizonMode,
         optionSide: optionsControls.optionSide,
         premiumMode: optionsControls.premiumMode,
         manualExpiry:
-          optionsControls.expiryScope === "manual" &&
-          optionsControls.manualExpiry.trim()
+          optionsControls.expiryScope === "manual" && optionsControls.manualExpiry.trim()
             ? optionsControls.manualExpiry.trim()
-            : undefined,
+            : null,
         targetMode: optionsControls.targetMode,
         targetDelta:
-          optionsControls.targetMode === "delta" &&
-          optionsControls.targetDelta.trim()
-            ? optionsControls.targetDelta.trim()
-            : undefined,
+          optionsControls.targetMode === "delta" && optionsControls.targetDelta.trim()
+            ? parseFloat(optionsControls.targetDelta)
+            : 0.30,
         targetPercentOtm:
-          optionsControls.targetMode === "percent-otm" &&
-          optionsControls.targetPercentOtm.trim()
-            ? optionsControls.targetPercentOtm.trim()
-            : undefined,
+          optionsControls.targetMode === "percent-otm" && optionsControls.targetPercentOtm.trim()
+            ? parseFloat(optionsControls.targetPercentOtm)
+            : 5.0,
       };
 
-      const selectedManualExpiry =
-        optionsControls.expiryScope === "manual" &&
-        optionsControls.manualExpiry.trim()
-          ? optionsControls.manualExpiry.trim()
-          : "";
+      const response = await fetch(
+        `${import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000"}/polygon/options/bulk`,
+        {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            Authorization: `Bearer ${localStorage.getItem("token") ?? ""}`,
+          },
+          body: JSON.stringify(body),
+        }
+      );
 
-      const concurrencyLimit = 4;
+      if (!response.ok) {
+        throw new Error(`Bulk options request failed: ${response.status}`);
+      }
+
+      if (requestId !== optionsRequestIdRef.current) return;
+
+      const data = await response.json();
+      const results: Record<string, { resolved: any; error: string | null; availableExpiries: string[]; selectedExpiry: string | null }> =
+        data.results ?? {};
+
       const nextBySymbol: Record<string, OptionRowState> = {};
       let failureCount = 0;
 
-      for (let index = 0; index < symbols.length; index += concurrencyLimit) {
-        const batch = symbols.slice(index, index + concurrencyLimit);
+      for (const symbol of symbols) {
+        const entry = results[symbol.toUpperCase()];
 
-        const batchResults = await Promise.allSettled(
-          batch.map((symbol) => getPolygonOptionResolved(symbol, queryParams))
-        );
-
-        if (requestId !== optionsRequestIdRef.current) {
-          return;
+        if (!entry || entry.error) {
+          failureCount += 1;
+          nextBySymbol[symbol] = {
+            resolved: null,
+            note: optionsControls.expiryScope === "manual"
+              ? "No contract at selected expiry"
+              : "Options unavailable",
+          };
+          continue;
         }
 
-        batchResults.forEach((result, batchIndex) => {
-          const symbol = batch[batchIndex];
+        const resolved = entry.resolved ?? null;
+        const returnedExpiries = Array.isArray(entry.availableExpiries)
+          ? entry.availableExpiries
+          : [];
 
-          if (result.status === "fulfilled") {
-            const response = result.value;
-            const resolved = response?.resolved ?? null;
-            const returnedExpiries = Array.isArray(response?.availableExpiries)
-              ? response.availableExpiries
-              : [];
-
-            let note = "";
-
-            if (resolved) {
-              note = "Live option loaded";
-            } else if (optionsControls.expiryScope === "manual") {
-              if (
-                selectedManualExpiry &&
-                returnedExpiries.length > 0 &&
-                !returnedExpiries.includes(selectedManualExpiry)
-              ) {
-                note = "Selected expiry unavailable for this symbol";
-              } else {
-                note = "No contract at selected expiry";
-              }
-            } else {
-              note = "No option match";
-            }
-
-            nextBySymbol[symbol] = {
-              resolved,
-              note,
-            };
-
-            if (!resolved) {
-              failureCount += 1;
-            }
+        let note = "";
+        if (resolved) {
+          note = "Live option loaded";
+        } else if (optionsControls.expiryScope === "manual") {
+          const selectedManualExpiry = optionsControls.manualExpiry.trim();
+          if (
+            selectedManualExpiry &&
+            returnedExpiries.length > 0 &&
+            !returnedExpiries.includes(selectedManualExpiry)
+          ) {
+            note = "Selected expiry unavailable for this symbol";
           } else {
-            failureCount += 1;
-
-            nextBySymbol[symbol] = {
-              resolved: null,
-              note:
-                optionsControls.expiryScope === "manual"
-                  ? "No contract at selected expiry"
-                  : "Options unavailable",
-            };
+            note = "No contract at selected expiry";
           }
-        });
+        } else {
+          note = "No option match";
+        }
+
+        if (!resolved) failureCount += 1;
+
+        nextBySymbol[symbol] = { resolved, note };
       }
 
-      if (requestId !== optionsRequestIdRef.current) {
-        return;
-      }
+      if (requestId !== optionsRequestIdRef.current) return;
 
       setOptionsBySymbol(nextBySymbol);
 
-      const resolvedCount = Object.values(nextBySymbol).filter(
-        (item) => item.resolved
-      ).length;
-
+      const resolvedCount = Object.values(nextBySymbol).filter((item) => item.resolved).length;
       if (failureCount > 0 && resolvedCount === 0) {
         setOptionsError(
-          `Options data unavailable for ${failureCount} ticker${
-            failureCount === 1 ? "" : "s"
-          }.`
+          `Options data unavailable for ${failureCount} ticker${failureCount === 1 ? "" : "s"}.`
         );
       } else {
         setOptionsError("");
       }
     } catch (err) {
-      if (requestId !== optionsRequestIdRef.current) {
-        return;
-      }
-
-      const message =
-        err instanceof Error ? err.message : "Failed to load options";
+      if (requestId !== optionsRequestIdRef.current) return;
+      const message = err instanceof Error ? err.message : "Failed to load options";
       setOptionsBySymbol({});
       setOptionsError(message);
     } finally {

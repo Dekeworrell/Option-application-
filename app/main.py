@@ -329,68 +329,6 @@ async def polygon_debug():
         "has_get_option_contract_snapshot": hasattr(polygon_client, "get_option_contract_snapshot"),
     }
 
-
-def _pick_best_candidate(
-    contracts: list[dict],
-    underlying_price: float | None,
-) -> dict | None:
-    if not contracts:
-        return None
-
-    if underlying_price is None or underlying_price <= 0:
-        contracts_sorted = sorted(
-            contracts,
-            key=lambda contract: (
-                0 if _safe_float(contract.get("premium")) is not None else 1,
-                _safe_float(contract.get("strike")) or 999999.0,
-            ),
-        )
-        return contracts_sorted[0] if contracts_sorted else None
-
-    valid_contracts: list[dict] = []
-    for contract in contracts:
-        strike = _safe_float(contract.get("strike"))
-        option_side = (contract.get("optionSide") or "").lower().strip()
-
-        if strike is None or strike <= 0:
-            continue
-
-        if option_side == "call" and strike >= underlying_price:
-            valid_contracts.append(contract)
-        elif option_side == "put" and strike <= underlying_price:
-            valid_contracts.append(contract)
-
-    pool = valid_contracts if valid_contracts else contracts
-
-    def sort_key(contract: dict) -> tuple[float, int, float]:
-        strike = _safe_float(contract.get("strike")) or 999999.0
-        premium_value = _safe_float(contract.get("premium"))
-        distance_pct = abs(strike - underlying_price) / underlying_price
-
-        return (
-            distance_pct,
-            0 if premium_value is not None else 1,
-            strike,
-        )
-
-    pool_sorted = sorted(pool, key=sort_key)
-
-    within_band = []
-    for contract in pool_sorted:
-        strike = _safe_float(contract.get("strike"))
-        if strike is None:
-            continue
-
-        distance_pct = abs(strike - underlying_price) / underlying_price
-        if distance_pct <= 0.10:
-            within_band.append(contract)
-
-    if within_band:
-        return sorted(within_band, key=sort_key)[0]
-
-    return pool_sorted[0] if pool_sorted else None
-
-
 @app.get("/polygon/options/{symbol}")
 async def polygon_options(
     symbol: str,
