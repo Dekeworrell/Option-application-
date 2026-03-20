@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, date, timedelta, timezone
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Query
@@ -12,9 +12,11 @@ router = APIRouter()
 
 UNDERLYING_CACHE_TTL_SECONDS = 60
 OPTION_CHAIN_CACHE_TTL_SECONDS = 60
+OPTION_PREV_CLOSE_CACHE_TTL_SECONDS = 300  # 5 minutes
 
 _underlying_cache: dict[str, tuple[datetime, float]] = {}
 _option_chain_cache: dict[str, tuple[datetime, list[dict[str, Any]]]] = {}
+_option_prev_close_cache: dict[str, tuple[datetime, float | None]] = {}
 
 
 def _utc_now() -> datetime:
@@ -60,34 +62,35 @@ def _select_expiries(
     if not available_expiries:
         return []
 
+    today = date.today().isoformat()
+    future_expiries = [e for e in available_expiries if e > today]
+
     if expiry_scope == "manual":
         if manual_expiry and manual_expiry in available_expiries:
             return [manual_expiry]
-        if available_expiries:
-            return [available_expiries[0]]
+        if future_expiries:
+            return [future_expiries[0]]
         return []
 
+    pool = future_expiries if future_expiries else available_expiries
+
     if expiry_scope == "weekly":
-        return available_expiries[:1]
-
+        return pool[:1]
     if expiry_scope == "near":
-        return available_expiries[:3]
-
+        return pool[:3]
     if expiry_scope == "far":
-        return available_expiries[-3:]
-
+        return pool[-3:]
     if expiry_scope == "all":
-        return available_expiries
-
+        return pool
     if expiry_scope == "fixed-horizon":
         if horizon_mode == "1m":
-            return available_expiries[:4]
+            return pool[:4]
         if horizon_mode == "6m":
-            return available_expiries[:12]
+            return pool[:12]
         if horizon_mode == "1y":
-            return available_expiries[:24]
+            return pool[:24]
 
-    return available_expiries[:1]
+    return pool[:1]
 
 
 async def _get_cached_underlying_price(client: PolygonClient, symbol: str) -> float:
@@ -119,8 +122,6 @@ async def _get_cached_option_chain(
         if (now - cached_at).total_seconds() < OPTION_CHAIN_CACHE_TTL_SECONDS:
             return cached_value
 
-    # Reduced from max_pages=8 to max_pages=3 — fetching 750 contracts
-    # is more than enough to find the best match and is 3x faster.
     value = await client.get_option_chain_snapshot(
         underlying=symbol,
         contract_type=contract_type,
@@ -129,6 +130,30 @@ async def _get_cached_option_chain(
     )
     _option_chain_cache[key] = (now, value)
     return value
+
+
+async def _get_cached_option_prev_close(
+    client: PolygonClient,
+    option_ticker: str,
+) -> float | None:
+    """Fetch the previous close price for an option contract (cached)."""
+    key = option_ticker.upper()
+    now = _utc_now()
+
+    cached = _option_prev_close_cache.get(key)
+    if cached:
+        cached_at, cached_value = cached
+        if (now - cached_at).total_seconds() < OPTION_PREV_CLOSE_CACHE_TTL_SECONDS:
+            return cached_value
+
+    try:
+        value = await client.get_prev_close(option_ticker)
+        result = float(value) if value is not None else None
+    except Exception:
+        result = None
+
+    _option_prev_close_cache[key] = (now, result)
+    return result
 
 
 def _resolve_best_contract(
@@ -143,10 +168,7 @@ def _resolve_best_contract(
     target_delta: float | None,
     target_percent_otm: float | None,
 ) -> dict[str, Any]:
-    """
-    Pure function — resolves the best contract from a raw chain.
-    Shared by both the single and bulk endpoints.
-    """
+    """Pure function — resolves the best contract from a raw chain."""
     standard_contracts: list[dict[str, Any]] = []
     available_expiries_set: set[str] = set()
 
@@ -267,6 +289,31 @@ def _resolve_best_contract(
     }
 
 
+async def _apply_premium_fallback(
+    client: PolygonClient,
+    resolved: dict[str, Any] | None,
+) -> None:
+    """
+    If premium is null, fetch the option's previous close as a fallback.
+    Handles Starter plan accounts where bid/ask/last are not in the snapshot.
+    Mutates resolved in place.
+    """
+    if not resolved or resolved.get("premium") is not None:
+        return
+
+    option_ticker = resolved.get("optionTicker")
+    if not option_ticker:
+        return
+
+    prev_price = await _get_cached_option_prev_close(client, option_ticker)
+    if prev_price is not None and prev_price > 0:
+        resolved["premium"] = round(prev_price, 4)
+        resolved["last"] = round(prev_price, 4)
+        strike = resolved.get("strike")
+        if strike and strike > 0:
+            resolved["returnPercent"] = round((prev_price / strike) * 100.0, 4)
+
+
 @router.get("/polygon/options/{symbol}")
 async def get_polygon_option_resolved(
     symbol: str,
@@ -291,8 +338,10 @@ async def get_polygon_option_resolved(
         contract_type = "put"
 
     try:
-        underlying_price = await _get_cached_underlying_price(client, symbol)
-        raw_chain = await _get_cached_option_chain(client, symbol, contract_type)
+        underlying_price, raw_chain = await asyncio.gather(
+            _get_cached_underlying_price(client, symbol),
+            _get_cached_option_chain(client, symbol, contract_type),
+        )
     except Exception as exc:
         raise HTTPException(
             status_code=502,
@@ -312,6 +361,8 @@ async def get_polygon_option_resolved(
         target_percent_otm=target_percent_otm,
     )
 
+    await _apply_premium_fallback(client, result.get("resolved"))
+
     return {
         "symbol": symbol.upper(),
         "expiryScope": expiry_scope,
@@ -329,19 +380,6 @@ async def get_polygon_options_bulk(
     """
     Accepts a list of symbols and shared query params.
     Fetches all symbols concurrently and returns results keyed by symbol.
-
-    Request body:
-    {
-        "symbols": ["AAPL", "MSFT", "NVDA"],
-        "expiryScope": "weekly",
-        "horizonMode": "1m",
-        "optionSide": "calls",
-        "premiumMode": "mid",
-        "manualExpiry": null,
-        "targetMode": "delta",
-        "targetDelta": 0.30,
-        "targetPercentOtm": 5.0
-    }
     """
     symbols: list[str] = payload.get("symbols") or []
     expiry_scope: str = payload.get("expiryScope", "weekly")
@@ -385,6 +423,9 @@ async def get_polygon_options_bulk(
                 target_delta=target_delta,
                 target_percent_otm=target_percent_otm,
             )
+
+            await _apply_premium_fallback(client, result.get("resolved"))
+
             return (symbol.upper(), {"symbol": symbol.upper(), **result, "error": None})
         except Exception as exc:
             return (
@@ -400,7 +441,6 @@ async def get_polygon_options_bulk(
                 },
             )
 
-    # Fetch all symbols truly concurrently
     results_list = await asyncio.gather(*[fetch_one(s) for s in symbols])
     results = {symbol: data for symbol, data in results_list}
 
