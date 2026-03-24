@@ -15,6 +15,8 @@ from app.routes.tickers import router as tickers_router
 from app.routes.presets import router as presets_router
 
 import app.models  # noqa: F401
+import logging
+logging.basicConfig(level=logging.INFO)
 
 from app.routes.polygon import router as polygon_router
 
@@ -53,7 +55,8 @@ async def startup_event():
     # Then run every 60 seconds
     scheduler.add_job(
         refresh_market_cache,
-        trigger=IntervalTrigger(seconds=60),
+        trigger=IntervalTrigger(minutes=15),
+        misfire_grace_time=30,
         id="market_cache_refresh",
         replace_existing=True,
     )
