@@ -126,7 +126,7 @@ async def _get_cached_option_chain(
         underlying=symbol,
         contract_type=contract_type,
         limit=250,
-        max_pages=3,
+        max_pages=1,
     )
     _option_chain_cache[key] = (now, value)
     return value

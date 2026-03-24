@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime, date, timedelta
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.concurrency import run_in_threadpool
-
 from sqlalchemy import func, case
 from sqlalchemy.orm import Session
 
@@ -16,9 +13,7 @@ from app.models.user import User
 from app.models.list import List as Watchlist
 from app.models.ticker import Ticker
 from app.models.scan_result import ScanResult
-from app.models.scan_preset import ScanPreset
-from polygon import RESTClient
-from app.core.config import settings
+from app.models.market_cache import MarketCache
 
 from app.schemas.lists import ListCreate, ListOut, ListUpdate
 from app.schemas.tickers import TickerCreate, TickerOut
@@ -33,13 +28,8 @@ from app.schemas.scan import (
 from app.services.scan_service import run_polygon_scan_for_list
 from app.services.preset_service import get_preset
 
-from time import time
-from copy import deepcopy
-
 
 router = APIRouter(prefix="/lists", tags=["Lists"])
-QUOTE_CACHE_TTL_SECONDS = 300
-_quote_cache: dict[int, dict] = {}
 
 
 def _get_list_owned(db: Session, *, list_id: int, user_id: int) -> Watchlist:
@@ -60,186 +50,14 @@ def _to_scan_result_out(sr: ScanResult, symbol: str) -> ScanResultHistoryOut:
         and sr.underlying_price < sr.ma30
     )
     return ScanResultHistoryOut(
-        id=sr.id,
-        list_id=sr.list_id,
-        ticker_id=sr.ticker_id,
-        symbol=symbol,
-        run_at=sr.run_at,
-        underlying_price=sr.underlying_price,
-        ma30=sr.ma30,
-        option_type=sr.option_type,
-        expiry=sr.expiry,
-        strike=sr.strike,
-        delta=sr.delta,
-        premium=sr.premium,
-        return_pct=sr.return_pct,
-        status=sr.status,
-        error=sr.error,
+        id=sr.id, list_id=sr.list_id, ticker_id=sr.ticker_id, symbol=symbol,
+        run_at=sr.run_at, underlying_price=sr.underlying_price, ma30=sr.ma30,
+        option_type=sr.option_type, expiry=sr.expiry, strike=sr.strike,
+        delta=sr.delta, premium=sr.premium, return_pct=sr.return_pct,
+        status=sr.status, error=sr.error,
         raw_json=sr.raw_json if isinstance(sr.raw_json, dict) else None,
         is_below_ma30=is_below,
     )
-
-
-async def _fetch_quotes_bulk(client: RESTClient, symbols: list[str]) -> dict[str, dict]:
-    """
-    Fetch quotes for all symbols in a single Polygon bulk snapshot call.
-    Returns a dict keyed by symbol.
-    """
-    today = date.today()
-    date_from = (today - timedelta(days=7)).isoformat()
-    date_to = today.isoformat()
-
-    results: dict[str, dict] = {}
-
-    # Initialize all symbols with error state
-    for symbol in symbols:
-        results[symbol] = {
-            "symbol": symbol,
-            "last_price": None,
-            "change": None,
-            "change_percent": None,
-            "updated_at": None,
-            "status": "error",
-            "error": "No data",
-        }
-
-    try:
-        # Single bulk call for all tickers
-        snapshots = await run_in_threadpool(
-            client.list_snapshot_all_tickers,
-            "stocks",
-            tickers=symbols,
-        )
-
-        try:
-            snapshot_list = list(snapshots) if snapshots is not None else []
-        except Exception:
-            snapshot_list = []
-
-        for snapshot in snapshot_list:
-            symbol = getattr(snapshot, "ticker", None)
-            if not symbol or symbol not in results:
-                continue
-
-            day = getattr(snapshot, "day", None)
-            prev_day = getattr(snapshot, "prev_day", None)
-
-            close = None
-            prev_close = None
-
-            if day:
-                close = getattr(day, "close", None) or getattr(day, "c", None)
-            if prev_day:
-                prev_close = getattr(prev_day, "close", None) or getattr(prev_day, "c", None)
-
-            if close is None:
-                last_trade = getattr(snapshot, "last_trade", None)
-                if last_trade:
-                    close = getattr(last_trade, "price", None) or getattr(last_trade, "p", None)
-
-            last_price = float(close) if close is not None else None
-            change = None
-            change_percent = None
-
-            if close is not None and prev_close not in (None, 0):
-                change = float(close) - float(prev_close)
-                change_percent = (float(close) - float(prev_close)) / float(prev_close) * 100
-
-            updated_at = None
-            if getattr(snapshot, "updated", None):
-                updated_at = str(snapshot.updated)
-
-            results[symbol] = {
-                "symbol": symbol,
-                "last_price": last_price,
-                "change": change,
-                "change_percent": change_percent,
-                "updated_at": updated_at,
-                "status": "ok" if last_price is not None else "error",
-                "error": None if last_price is not None else "No price data",
-            }
-
-    except Exception as bulk_error:
-        bulk_text = str(bulk_error)
-
-        # Fallback: fetch daily bars for all symbols concurrently
-        async def _fallback_single(symbol: str) -> tuple[str, dict]:
-            try:
-                aggs = await run_in_threadpool(
-                    client.get_aggs,
-                    symbol, 1, "day", date_from, date_to,
-                    adjusted=True, sort="desc", limit=5,
-                )
-                bars = list(aggs or [])
-
-                if bars:
-                    latest_bar = bars[0]
-                    prev_bar = bars[1] if len(bars) >= 2 else None
-
-                    latest_close = getattr(latest_bar, "close", None) or getattr(latest_bar, "c", None)
-                    last_price = float(latest_close) if latest_close is not None else None
-
-                    prev_close = None
-                    if prev_bar is not None:
-                        prev_close = getattr(prev_bar, "close", None) or getattr(prev_bar, "c", None)
-
-                    change = None
-                    change_percent = None
-                    if last_price is not None and prev_close not in (None, 0):
-                        change = float(last_price) - float(prev_close)
-                        change_percent = (float(last_price) - float(prev_close)) / float(prev_close) * 100
-
-                    bar_ts = getattr(latest_bar, "timestamp", None) or getattr(latest_bar, "t", None)
-                    updated_at = None
-                    if bar_ts is not None:
-                        try:
-                            updated_at = datetime.fromtimestamp(bar_ts / 1000).isoformat()
-                        except Exception:
-                            updated_at = str(bar_ts)
-
-                    return symbol, {
-                        "symbol": symbol,
-                        "last_price": last_price,
-                        "change": change,
-                        "change_percent": change_percent,
-                        "updated_at": updated_at,
-                        "status": "delayed",
-                        "error": "Fallback daily data",
-                    }
-                else:
-                    return symbol, {
-                        "symbol": symbol,
-                        "last_price": None,
-                        "change": None,
-                        "change_percent": None,
-                        "updated_at": None,
-                        "status": "error",
-                        "error": "No data available",
-                    }
-            except Exception as e:
-                return symbol, {
-                    "symbol": symbol,
-                    "last_price": None,
-                    "change": None,
-                    "change_percent": None,
-                    "updated_at": None,
-                    "status": "error",
-                    "error": str(e),
-                }
-
-        # Run fallback concurrently in batches of 10
-        fallback_results = []
-        for i in range(0, len(symbols), 10):
-            batch = symbols[i:i + 10]
-            batch_results = await asyncio.gather(*[_fallback_single(s) for s in batch])
-            fallback_results.extend(batch_results)
-            if i + 10 < len(symbols):
-                        await asyncio.sleep(2)
-
-        for symbol, data in fallback_results:
-            results[symbol] = data
-
-    return results
 
 
 # -------------------------------------------------
@@ -422,22 +240,21 @@ def get_tickers(
 
 
 # -------------------------------------------------
-# Quotes — single bulk snapshot call
+# Quotes — served instantly from market_cache table
 # -------------------------------------------------
 
 @router.get("/{list_id}/quotes")
-async def get_list_quotes(
+def get_list_quotes(
     list_id: int,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
+    """
+    Returns pre-fetched market data from the cache table.
+    Data is refreshed by the background scheduler every 60 seconds.
+    Response is instant — no live Polygon calls.
+    """
     _get_list_owned(db, list_id=list_id, user_id=current_user.id)
-
-    now_ts = time()
-    cached = _quote_cache.get(list_id)
-
-    if cached and (now_ts - cached["timestamp"] < QUOTE_CACHE_TTL_SECONDS):
-        return deepcopy(cached["data"])
 
     tickers = (
         db.query(Ticker)
@@ -449,36 +266,66 @@ async def get_list_quotes(
     if not tickers:
         return {"list_id": list_id, "count": 0, "quotes": []}
 
-    client = RESTClient(settings.polygon_api_key)
     symbols = [t.symbol.upper() for t in tickers]
 
-    quotes_by_symbol = await _fetch_quotes_bulk(client, symbols)
-
-    # Return in same order as tickers
-    results = [quotes_by_symbol[symbol] for symbol in symbols if symbol in quotes_by_symbol]
-
-    response_data = {
-        "list_id": list_id,
-        "count": len(results),
-        "quotes": results,
-    }
-
-    has_any_good_data = any(
-        row["status"] in ("ok", "delayed") and row["last_price"] is not None
-        for row in results
+    # Fetch all cache rows for these symbols in one DB query
+    cache_rows = (
+        db.query(MarketCache)
+        .filter(MarketCache.symbol.in_(symbols))
+        .all()
     )
+    cache_by_symbol = {row.symbol: row for row in cache_rows}
 
-    if has_any_good_data:
-        _quote_cache[list_id] = {"timestamp": now_ts, "data": deepcopy(response_data)}
-        return response_data
+    quotes = []
+    for symbol in symbols:
+        row = cache_by_symbol.get(symbol)
 
-    if cached:
-        stale_data = deepcopy(cached["data"])
-        for row in stale_data.get("quotes", []):
-            row["error"] = "Using cached data"
-        return stale_data
+        if row and row.underlying_price is not None:
+            quotes.append({
+                "symbol": symbol,
+                "last_price": row.underlying_price,
+                "change": None,
+                "change_percent": None,
+                "updated_at": row.fetched_at.isoformat() if row.fetched_at else None,
+                "status": "ok",
+                "error": None,
+                # Option data
+                "strike": row.strike,
+                "expiry": row.expiry,
+                "option_side": row.option_side,
+                "premium": row.premium,
+                "return_percent": row.return_percent,
+                "delta": row.delta,
+                "gamma": row.gamma,
+                "theta": row.theta,
+                "vega": row.vega,
+                "moneyness": row.moneyness,
+                "available_expiries": row.available_expiries or [],
+            })
+        else:
+            # Not in cache yet — scheduler hasn't fetched it yet
+            quotes.append({
+                "symbol": symbol,
+                "last_price": None,
+                "change": None,
+                "change_percent": None,
+                "updated_at": None,
+                "status": "pending",
+                "error": "Awaiting first cache refresh",
+                "strike": None,
+                "expiry": None,
+                "option_side": None,
+                "premium": None,
+                "return_percent": None,
+                "delta": None,
+                "gamma": None,
+                "theta": None,
+                "vega": None,
+                "moneyness": None,
+                "available_expiries": [],
+            })
 
-    return response_data
+    return {"list_id": list_id, "count": len(quotes), "quotes": quotes}
 
 
 # -------------------------------------------------
@@ -516,29 +363,18 @@ async def run_scan(
         raise HTTPException(status_code=400, detail="List has no tickers to scan")
 
     run_at, rows = await run_polygon_scan_for_list(
-        db,
-        list_id=list_id,
-        tickers=tickers,
-        option_type=payload.option_type,
-        delta_target=payload.delta_target,
-        indicators=payload.indicators,
-        trend_sma_length=payload.trend_sma_length,
-        trend_type=payload.trend_type,
-        use_ma30_filter=payload.use_ma30_filter,
-        use_rsi_filter=payload.use_rsi_filter,
-        rsi_length=payload.rsi_length,
-        rsi_min=payload.rsi_min,
-        rsi_max=payload.rsi_max,
+        db, list_id=list_id, tickers=tickers,
+        option_type=payload.option_type, delta_target=payload.delta_target,
+        indicators=payload.indicators, trend_sma_length=payload.trend_sma_length,
+        trend_type=payload.trend_type, use_ma30_filter=payload.use_ma30_filter,
+        use_rsi_filter=payload.use_rsi_filter, rsi_length=payload.rsi_length,
+        rsi_min=payload.rsi_min, rsi_max=payload.rsi_max,
     )
 
-    error_count = len([row for row in rows if getattr(row, "status", "") != "ok"])
+    error_count = len([r for r in rows if getattr(r, "status", "") != "ok"])
     return ScanRunResponse(
-        ok=True,
-        list_id=list_id,
-        run_at=run_at,
-        inserted=len(rows),
-        errors=error_count,
-        results=rows,
+        ok=True, list_id=list_id, run_at=run_at,
+        inserted=len(rows), errors=error_count, results=rows,
     )
 
 
@@ -549,7 +385,6 @@ def get_latest_scan_results(
     current_user: User = Depends(get_current_user),
 ):
     _ = _get_list_owned(db, list_id=list_id, user_id=current_user.id)
-
     latest_run_at = (
         db.query(func.max(ScanResult.run_at))
         .filter(ScanResult.list_id == list_id)
@@ -570,7 +405,7 @@ def get_latest_scan_results(
         .all()
     )
 
-    out: list[ScanResultLatestOut] = []
+    out = []
     for sr, t in rows:
         is_below = (
             sr.underlying_price is not None
@@ -598,7 +433,6 @@ def get_scan_history_runs(
 ):
     _ = _get_list_owned(db, list_id=list_id, user_id=current_user.id)
     limit = max(1, min(limit, 100))
-
     rows = (
         db.query(
             ScanResult.run_at.label("run_at"),
@@ -612,15 +446,12 @@ def get_scan_history_runs(
         .limit(limit)
         .all()
     )
-
     return [
         ScanHistoryRunSummaryOut(
-            run_at=row.run_at,
-            total=int(row.total or 0),
-            ok=int(row.ok or 0),
-            errors=int(row.errors or 0),
+            run_at=r.run_at, total=int(r.total or 0),
+            ok=int(r.ok or 0), errors=int(r.errors or 0),
         )
-        for row in rows
+        for r in rows
     ]
 
 
@@ -632,7 +463,6 @@ def get_scan_history_for_run(
     current_user: User = Depends(get_current_user),
 ):
     _ = _get_list_owned(db, list_id=list_id, user_id=current_user.id)
-
     rows = (
         db.query(ScanResult, Ticker)
         .join(Ticker, Ticker.id == ScanResult.ticker_id)
@@ -644,5 +474,4 @@ def get_scan_history_for_run(
         )
         .all()
     )
-
     return [_to_scan_result_out(sr, t.symbol) for sr, t in rows]

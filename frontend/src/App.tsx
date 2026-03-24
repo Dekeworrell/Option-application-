@@ -8,14 +8,12 @@ import {
   deleteList,
   deleteTicker,
   getLists,
-  getPolygonOptionResolved,
   getTickers,
   getWatchlistQuotes,
   isLoggedIn,
   login,
   saveToken,
   updateList,
-  type PolygonResolvedOption,
   type TickerItem,
   type Watchlist,
   type WatchlistQuote,
@@ -47,7 +45,6 @@ type SavedView = {
   id: string; name: string; columns: VisibleColumnsState; columnOrder: ColumnKey[];
   filters: WatchlistFiltersState; sort: string; optionsControls: OptionsControlsState;
 };
-type OptionRowState = { resolved: PolygonResolvedOption | null; note: string; };
 type WatchlistEditorMode = "idle" | "create" | "edit";
 type ToolbarMenuKey = "columns" | "sort" | "filter" | "view" | null;
 
@@ -55,7 +52,7 @@ const defaultVisibleColumns: VisibleColumnsState = {
   symbol: true, price: true, strike: true, expiry: true, optionSide: false,
   premium: true, returnPercent: false, delta: false, gamma: false, theta: false,
   vega: false, rho: false, moneyness: true, ma20: false, ma30: false, ma50: false,
-  ma200: false, change: true, changePercent: true, status: true, updated: true, note: true,
+  ma200: false, change: false, changePercent: false, status: true, updated: true, note: true,
 };
 
 const defaultColumnOrder: ColumnKey[] = [
@@ -201,24 +198,18 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
   const [quotes, setQuotes] = useState<WatchlistQuote[]>([]);
   const [quotesLoading, setQuotesLoading] = useState(false);
   const [quotesError, setQuotesError] = useState("");
-  const [optionsBySymbol, setOptionsBySymbol] = useState<Record<string, OptionRowState>>({});
-  const [optionsLoading, setOptionsLoading] = useState(false);
-  const [optionsError, setOptionsError] = useState("");
   const [openMenu, setOpenMenu] = useState<ToolbarMenuKey>(null);
   const [visibleColumns, setVisibleColumns] = useState<VisibleColumnsState>(defaultVisibleColumns);
   const [columnOrder, setColumnOrder] = useState<ColumnKey[]>(defaultColumnOrder);
   const [filters, setFilters] = useState<WatchlistFiltersState>(defaultFilters);
   const [sortOption, setSortOption] = useState("symbol-asc");
   const [optionsControls, setOptionsControls] = useState<OptionsControlsState>(defaultOptionsControls);
-  const [availableExpiries, setAvailableExpiries] = useState<string[]>([]);
-  const [expiryOptionsLoading, setExpiryOptionsLoading] = useState(false);
   const [draggedColumnKey, setDraggedColumnKey] = useState<ColumnKey | null>(null);
   const [dragOverColumnKey, setDragOverColumnKey] = useState<ColumnKey | null>(null);
   const [toolbarCollapsed, setToolbarCollapsed] = useState<boolean>(() => {
     try { const raw = localStorage.getItem(TOOLBAR_COLLAPSED_STORAGE_KEY); return raw ? JSON.parse(raw) === true : true; }
     catch { return true; }
   });
-  const optionsRequestIdRef = useRef(0);
   const [savedViews, setSavedViews] = useState<SavedView[]>(() => {
     const defaultView: SavedView = { id: "default", name: "Default", columns: defaultVisibleColumns, columnOrder: defaultColumnOrder, filters: defaultFilters, sort: "symbol-asc", optionsControls: defaultOptionsControls };
     try {
@@ -247,10 +238,9 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
   useEffect(() => { localStorage.setItem(TOOLBAR_COLLAPSED_STORAGE_KEY, JSON.stringify(toolbarCollapsed)); }, [toolbarCollapsed]);
   useEffect(() => {
     setVisibleColumns(defaultVisibleColumns); setColumnOrder(defaultColumnOrder); setFilters(defaultFilters);
-    setSortOption("symbol-asc"); setOptionsControls(defaultOptionsControls); setOptionsBySymbol({});
-    setOptionsError(""); setAvailableExpiries([]); setExpiryOptionsLoading(false); setOpenMenu(null);
-    setActiveViewId("default"); setDraggedColumnKey(null); setDragOverColumnKey(null);
-    optionsRequestIdRef.current += 1;
+    setSortOption("symbol-asc"); setOptionsControls(defaultOptionsControls); setQuotes([]);
+    setQuotesError(""); setOpenMenu(null); setActiveViewId("default");
+    setDraggedColumnKey(null); setDragOverColumnKey(null);
   }, [selectedListId]);
 
   useEffect(() => {
@@ -263,94 +253,51 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
     return () => document.removeEventListener("mousedown", handleDocumentClick);
   }, []);
 
-  const optionSymbols = useMemo(() =>
-    Array.from(new Set(quotes.map((q) => q.symbol).filter((s): s is string => Boolean(s)))).sort(),
-    [quotes]
-  );
-
-  async function loadQuotesForList(listId: number): Promise<WatchlistQuote[]> {
+  async function loadQuotesForList(listId: number): Promise<void> {
     setQuotesLoading(true); setQuotesError("");
     try {
       const data = await getWatchlistQuotes(listId);
-      const normalized = Array.isArray(data) ? data : [];
-      setQuotes(normalized); return normalized;
+      setQuotes(Array.isArray(data) ? data : []);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Failed to load quotes";
-      setQuotesError(message); setQuotes([]); return [];
+      setQuotesError(err instanceof Error ? err.message : "Failed to load quotes");
+      setQuotes([]);
     } finally { setQuotesLoading(false); }
   }
 
-  async function loadOptionsForSymbols(symbols: string[]) {
-    const requestId = ++optionsRequestIdRef.current;
-    if (symbols.length === 0) { setOptionsBySymbol({}); setOptionsError(""); setOptionsLoading(false); return; }
-    setOptionsLoading(true); setOptionsError("");
-    try {
-      const body = {
-        symbols,
-        expiryScope: optionsControls.expiryScope,
-        horizonMode: optionsControls.horizonMode,
-        optionSide: optionsControls.optionSide,
-        premiumMode: optionsControls.premiumMode,
-        manualExpiry: optionsControls.expiryScope === "manual" && optionsControls.manualExpiry.trim() ? optionsControls.manualExpiry.trim() : null,
-        targetMode: optionsControls.targetMode,
-        targetDelta: optionsControls.targetMode === "delta" && optionsControls.targetDelta.trim() ? parseFloat(optionsControls.targetDelta) : 0.30,
-        targetPercentOtm: optionsControls.targetMode === "percent-otm" && optionsControls.targetPercentOtm.trim() ? parseFloat(optionsControls.targetPercentOtm) : 5.0,
-      };
-      const response = await fetch(
-        `${import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000"}/polygon/options/bulk`,
-        { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${localStorage.getItem("token") ?? ""}` }, body: JSON.stringify(body) }
-      );
-      if (!response.ok) throw new Error(`Bulk options request failed: ${response.status}`);
-      if (requestId !== optionsRequestIdRef.current) return;
-      const data = await response.json();
-      const results: Record<string, { resolved: PolygonResolvedOption | null; error: string | null; availableExpiries: string[]; selectedExpiry: string | null; }> = data.results ?? {};
-      const nextBySymbol: Record<string, OptionRowState> = {};
-      let failureCount = 0;
-      for (const symbol of symbols) {
-        const entry = results[symbol.toUpperCase()];
-        if (!entry || entry.error) {
-          failureCount++;
-          nextBySymbol[symbol] = { resolved: null, note: optionsControls.expiryScope === "manual" ? "No contract at selected expiry" : "Options unavailable" };
-          continue;
-        }
-        const resolved = entry.resolved ?? null;
-        const returnedExpiries = Array.isArray(entry.availableExpiries) ? entry.availableExpiries : [];
-        let note = "";
-        if (resolved) { note = "Live option loaded"; }
-        else if (optionsControls.expiryScope === "manual") {
-          const sel = optionsControls.manualExpiry.trim();
-          note = sel && returnedExpiries.length > 0 && !returnedExpiries.includes(sel) ? "Selected expiry unavailable for this symbol" : "No contract at selected expiry";
-        } else { note = "No option match"; }
-        if (!resolved) failureCount++;
-        nextBySymbol[symbol] = { resolved, note };
-      }
-      if (requestId !== optionsRequestIdRef.current) return;
-      setOptionsBySymbol(nextBySymbol);
-      const resolvedCount = Object.values(nextBySymbol).filter((i) => i.resolved).length;
-      setOptionsError(failureCount > 0 && resolvedCount === 0 ? `Options data unavailable for ${failureCount} ticker${failureCount === 1 ? "" : "s"}.` : "");
-    } catch (err) {
-      if (requestId !== optionsRequestIdRef.current) return;
-      setOptionsBySymbol({}); setOptionsError(err instanceof Error ? err.message : "Failed to load options");
-    } finally { if (requestId === optionsRequestIdRef.current) setOptionsLoading(false); }
-  }
+  useEffect(() => {
+    if (!selectedListId) { setQuotes([]); setQuotesError(""); setQuotesLoading(false); return; }
+    const listId = selectedListId; let cancelled = false;
+    async function load() { if (cancelled) return; await loadQuotesForList(listId); }
+    load();
+    const id = window.setInterval(() => { if (document.visibilityState === "visible") load(); }, 60000);
+    return () => { cancelled = true; window.clearInterval(id); };
+  }, [selectedListId]);
 
   function getDisplayOptionData(quote: WatchlistQuote) {
-    const rowOptionState = optionsBySymbol[quote.symbol];
-    const liveData = rowOptionState?.resolved ?? null;
-    const optionSideLabel: "Call" | "Put" | "Mixed" = liveData?.optionSide === "Call" ? "Call" : liveData?.optionSide === "Put" ? "Put" : "Mixed";
-    const moneyness: MoneynessState = liveData?.moneyness === "ITM" || liveData?.moneyness === "ATM" || liveData?.moneyness === "OTM" ? liveData.moneyness : "-";
-    let expiryLabel = "-";
-    if (liveData?.expiry) expiryLabel = liveData.expiry;
-    else if (optionsControls.expiryScope === "manual") expiryLabel = optionsControls.manualExpiry || "Select expiry";
+    const strike = quote.strike ?? null;
+    const expiry = quote.expiry ?? null;
+    const optionSide = quote.option_side ?? null;
+    const premium = quote.premium ?? null;
+    const returnPercent = quote.return_percent ?? null;
+    const delta = quote.delta ?? null;
+    const gamma = quote.gamma ?? null;
+    const theta = quote.theta ?? null;
+    const vega = quote.vega ?? null;
+    const moneyness: MoneynessState =
+      quote.moneyness === "ITM" || quote.moneyness === "ATM" || quote.moneyness === "OTM"
+        ? quote.moneyness : "-";
+    const optionSideLabel: "Call" | "Put" | "Mixed" =
+      optionSide === "Call" ? "Call" : optionSide === "Put" ? "Put" : "Mixed";
+    const hasOption = strike !== null && expiry !== null && premium !== null;
+
     return {
-      strike: liveData?.strike ?? null, expiryLabel,
-      expirySortValue: liveData?.expiry ?? optionsControls.manualExpiry ?? "",
-      optionSideLabel, premium: liveData?.premium ?? null, returnPercent: liveData?.returnPercent ?? null,
-      delta: liveData?.delta ?? null, gamma: liveData?.gamma ?? null, theta: liveData?.theta ?? null,
-      vega: liveData?.vega ?? null, rho: liveData?.rho ?? null, moneyness,
-      ma20: null, ma30: null, ma50: null, ma200: null,
-      underlyingPrice: liveData?.underlyingPrice ?? null, note: rowOptionState?.note ?? "",
-      hasResolvedOption: Boolean(liveData),
+      strike, expiry, optionSideLabel, premium, returnPercent,
+      delta, gamma, theta, vega, rho: null,
+      moneyness, ma20: null, ma30: null, ma50: null, ma200: null,
+      underlyingPrice: quote.last_price,
+      hasOption,
+      note: hasOption ? "Live option loaded" :
+        quote.status === "pending" ? "Cache warming up..." : "Options unavailable",
     };
   }
 
@@ -367,83 +314,29 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
       const m = dir === "asc" ? 1 : -1;
       if (col === "symbol") return compareValues(a.symbol ?? "", b.symbol ?? "") * m;
       if (col === "price") return compareValues(toSafeNumber(a.last_price) ?? Number.NEGATIVE_INFINITY, toSafeNumber(b.last_price) ?? Number.NEGATIVE_INFINITY) * m;
-      if (col === "change") return compareValues(toSafeNumber(a.change) ?? Number.NEGATIVE_INFINITY, toSafeNumber(b.change) ?? Number.NEGATIVE_INFINITY) * m;
-      if (col === "changePercent") return compareValues(toSafeNumber(a.change_percent) ?? Number.NEGATIVE_INFINITY, toSafeNumber(b.change_percent) ?? Number.NEGATIVE_INFINITY) * m;
       if (col === "updated") return compareValues(a.updated_at ?? "", b.updated_at ?? "") * m;
       const dA = getDisplayOptionData(a), dB = getDisplayOptionData(b);
       switch (col) {
         case "strike": return compareValues(dA.strike, dB.strike) * m;
-        case "expiry": return compareValues(dA.expirySortValue, dB.expirySortValue) * m;
-        case "optionSide": return compareValues(dA.optionSideLabel, dB.optionSideLabel) * m;
         case "premium": return compareValues(dA.premium, dB.premium) * m;
         case "returnPercent": return compareValues(dA.returnPercent, dB.returnPercent) * m;
         case "delta": return compareValues(dA.delta, dB.delta) * m;
         case "gamma": return compareValues(dA.gamma, dB.gamma) * m;
         case "theta": return compareValues(dA.theta, dB.theta) * m;
         case "vega": return compareValues(dA.vega, dB.vega) * m;
-        case "rho": return compareValues(dA.rho, dB.rho) * m;
         case "moneyness": return compareValues(getMoneynessRank(dA.moneyness), getMoneynessRank(dB.moneyness)) * m;
-        case "ma20": return compareValues(dA.ma20, dB.ma20) * m;
-        case "ma30": return compareValues(dA.ma30, dB.ma30) * m;
-        case "ma50": return compareValues(dA.ma50, dB.ma50) * m;
-        case "ma200": return compareValues(dA.ma200, dB.ma200) * m;
         default: return 0;
       }
     });
-  }, [quotes, filters, sortOption, optionsControls, optionsBySymbol]);
+  }, [quotes, filters, sortOption, optionsControls]);
 
   const orderedVisibleColumns = useMemo(() => columnOrder.filter((k) => visibleColumns[k]), [columnOrder, visibleColumns]);
-
-  useEffect(() => {
-    if (!selectedListId) { setQuotes([]); setQuotesError(""); setQuotesLoading(false); return; }
-    const listId = selectedListId; let cancelled = false;
-    async function loadQuotes() { if (cancelled) return; await loadQuotesForList(listId); }
-    loadQuotes();
-    const id = window.setInterval(() => { if (document.visibilityState === "visible") loadQuotes(); }, 30000);
-    return () => { cancelled = true; window.clearInterval(id); };
-  }, [selectedListId]);
-
-  useEffect(() => {
-    if (optionsControls.expiryScope !== "manual") { setAvailableExpiries([]); setExpiryOptionsLoading(false); return; }
-    if (optionSymbols.length === 0) { setAvailableExpiries([]); setExpiryOptionsLoading(false); return; }
-    let cancelled = false;
-    async function loadExpiryOptions() {
-      try {
-        setExpiryOptionsLoading(true);
-        const response = await getPolygonOptionResolved(optionSymbols[0], {
-          expiryScope: "manual", horizonMode: optionsControls.horizonMode, optionSide: optionsControls.optionSide,
-          premiumMode: optionsControls.premiumMode, targetMode: optionsControls.targetMode,
-          targetDelta: optionsControls.targetMode === "delta" && optionsControls.targetDelta.trim() ? optionsControls.targetDelta.trim() : undefined,
-          targetPercentOtm: optionsControls.targetMode === "percent-otm" && optionsControls.targetPercentOtm.trim() ? optionsControls.targetPercentOtm.trim() : undefined,
-        });
-        if (cancelled) return;
-        const expiries = Array.isArray(response.availableExpiries) ? response.availableExpiries : [];
-        setAvailableExpiries(expiries);
-        if (expiries.length > 0 && (!optionsControls.manualExpiry || !expiries.includes(optionsControls.manualExpiry))) {
-          setOptionsControls((prev) => ({ ...prev, manualExpiry: response.selectedExpiry || expiries[0] }));
-        }
-      } catch { if (cancelled) return; setAvailableExpiries([]); }
-      finally { if (!cancelled) setExpiryOptionsLoading(false); }
-    }
-    loadExpiryOptions();
-    return () => { cancelled = true; };
-  }, [optionSymbols.join("|"), optionsControls.expiryScope, optionsControls.horizonMode, optionsControls.optionSide, optionsControls.premiumMode, optionsControls.targetMode, optionsControls.targetDelta, optionsControls.targetPercentOtm]);
-
-  useEffect(() => {
-    if (!selectedListId || optionSymbols.length === 0) { setOptionsBySymbol({}); setOptionsError(""); setOptionsLoading(false); return; }
-    let cancelled = false;
-    async function loadOptions() { if (cancelled) return; await loadOptionsForSymbols(optionSymbols); }
-    loadOptions();
-    const id = window.setInterval(() => { if (document.visibilityState === "visible") loadOptions(); }, 60000);
-    return () => { cancelled = true; optionsRequestIdRef.current += 1; window.clearInterval(id); };
-  }, [selectedListId, optionSymbols.join("|"), optionsControls.expiryScope, optionsControls.horizonMode, optionsControls.optionSide, optionsControls.premiumMode, optionsControls.manualExpiry, optionsControls.targetMode, optionsControls.targetDelta, optionsControls.targetPercentOtm]);
 
   function getSortKeyForColumn(k: ColumnKey): string | null {
     switch (k) {
       case "symbol": case "price": case "strike": case "expiry": case "optionSide":
       case "premium": case "returnPercent": case "delta": case "gamma": case "theta":
-      case "vega": case "rho": case "moneyness": case "ma20": case "ma30": case "ma50":
-      case "ma200": case "change": case "changePercent": case "updated": return k;
+      case "vega": case "rho": case "moneyness": case "change": case "changePercent": case "updated": return k;
       default: return null;
     }
   }
@@ -470,7 +363,7 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
       case "symbol": return <td style={{ ...bs, fontWeight: 800 }}>{quote.symbol}</td>;
       case "price": return <td style={{ ...bs, fontWeight: 800 }}>{formatNumber(toSafeNumber(quote.last_price))}</td>;
       case "strike": return <td style={bs}><span style={{ fontWeight: 700 }}>{formatNumber(od.strike)}</span></td>;
-      case "expiry": return <td style={bs}><span style={{ fontWeight: 700 }}>{od.expiryLabel}</span></td>;
+      case "expiry": return <td style={bs}><span style={{ fontWeight: 700 }}>{od.expiry ?? "-"}</span></td>;
       case "optionSide": return <td style={bs}><span style={optionSideBadgeStyle}>{od.optionSideLabel === "Mixed" ? "-" : od.optionSideLabel}</span></td>;
       case "premium": return <td style={{ ...bs, fontWeight: 700 }}>{formatCurrency(od.premium)}</td>;
       case "returnPercent": return <td style={{ ...bs, fontWeight: 700, color: getChangeColor(od.returnPercent) }}>{formatSignedPercent(od.returnPercent)}</td>;
@@ -478,21 +371,16 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
       case "gamma": return <td style={bs}>{formatMetric(od.gamma, 3)}</td>;
       case "theta": return <td style={{ ...bs, color: (od.theta ?? 0) < 0 ? "#991b1b" : "#0f172a" }}>{formatSignedMetric(od.theta, 3)}</td>;
       case "vega": return <td style={bs}>{formatMetric(od.vega, 3)}</td>;
-      case "rho": return <td style={bs}>{formatMetric(od.rho, 3)}</td>;
+      case "rho": return <td style={bs}>-</td>;
       case "moneyness": return <td style={bs}><span style={{ ...moneynessBadgeStyle, background: od.moneyness === "ITM" ? "#fee2e2" : od.moneyness === "ATM" ? "#fef3c7" : od.moneyness === "OTM" ? "#dcfce7" : "#e2e8f0", color: od.moneyness === "ITM" ? "#991b1b" : od.moneyness === "ATM" ? "#92400e" : od.moneyness === "OTM" ? "#166534" : "#475569" }}>{od.moneyness}</span></td>;
-      case "ma20": return <td style={bs}>{formatNumber(od.ma20)}</td>;
-      case "ma30": return <td style={bs}>{formatNumber(od.ma30)}</td>;
-      case "ma50": return <td style={bs}>{formatNumber(od.ma50)}</td>;
-      case "ma200": return <td style={bs}>{formatNumber(od.ma200)}</td>;
+      case "ma20": case "ma30": case "ma50": case "ma200": return <td style={bs}>-</td>;
       case "change": return <td style={{ ...bs, fontWeight: 700, color: getChangeColor(toSafeNumber(quote.change)) }}>{formatSignedNumber(toSafeNumber(quote.change))}</td>;
       case "changePercent": return <td style={{ ...bs, fontWeight: 700, color: getChangeColor(toSafeNumber(quote.change_percent)) }}>{formatSignedPercent(toSafeNumber(quote.change_percent))}</td>;
-      case "status": return <td style={bs}><span style={{ ...statusBadgeStyle, backgroundColor: quote.status === "ok" ? "#dcfce7" : quote.status === "delayed" ? "#fef3c7" : "#fee2e2", color: quote.status === "ok" ? "#166534" : quote.status === "delayed" ? "#92400e" : "#991b1b" }}>{quote.status ?? "-"}</span></td>;
+      case "status": return <td style={bs}><span style={{ ...statusBadgeStyle, backgroundColor: quote.status === "ok" ? "#dcfce7" : quote.status === "pending" ? "#fef3c7" : "#fee2e2", color: quote.status === "ok" ? "#166534" : quote.status === "pending" ? "#92400e" : "#991b1b" }}>{quote.status ?? "-"}</span></td>;
       case "updated": return <td style={bs}>{formatTimeShort(quote.updated_at)}</td>;
       case "note": {
-        let n = od.note;
-        if (!n) n = optionsLoading ? "Loading options" : quote.status === "delayed" ? "Fallback daily data" : "No option match";
-        const ie = n === "No contract at selected expiry" || n === "Selected expiry unavailable for this symbol";
-        return <td style={{ ...bs, color: ie ? "#92400e" : bs.color, fontWeight: ie ? 800 : bs.fontWeight }}>{n}</td>;
+        const isPending = quote.status === "pending";
+        return <td style={{ ...bs, color: isPending ? "#92400e" : bs.color }}>{od.note}</td>;
       }
       default: return <td style={bs}>-</td>;
     }
@@ -519,7 +407,7 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
       <div style={headerRowStyle}>
         <div>
           <h1 style={pageTitleStyle}>Dashboard</h1>
-          <p style={pageSubtitleStyle}>Customizable options decision workspace with live quote context</p>
+          <p style={pageSubtitleStyle}>Live options workspace — data refreshes every 60 seconds</p>
         </div>
       </div>
 
@@ -554,17 +442,9 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
                 )}
               </div>
 
-              <div style={toolbarControlGroupStyle}>
-                <label style={labelStyle}>Expiry Scope</label>
-                <select value={optionsControls.expiryScope} onChange={(e) => setOptionsControls((p) => ({ ...p, expiryScope: e.target.value as ExpiryScope, manualExpiry: e.target.value === "manual" ? p.manualExpiry : "" }))} style={compactSelectStyle}>
-                  <option value="weekly">Weekly</option><option value="near">Near</option><option value="far">Far</option>
-                  <option value="all">All</option><option value="fixed-horizon">Fixed Horizon</option><option value="manual">Manual</option>
-                </select>
-              </div>
-
               <div style={toolbarPrimaryActionsStyle}>
-                <button type="button" style={secondaryButtonStyle} onClick={async () => { if (!selectedListId) return; const rq = await loadQuotesForList(selectedListId); const rs = Array.from(new Set(rq.map((q) => q.symbol).filter((s): s is string => Boolean(s)))).sort(); await loadOptionsForSymbols(rs); }} disabled={!selectedListId || quotesLoading || optionsLoading}>
-                  {quotesLoading || optionsLoading ? "Refreshing..." : "Refresh"}
+                <button type="button" style={secondaryButtonStyle} onClick={() => { if (selectedListId) loadQuotesForList(selectedListId); }} disabled={!selectedListId || quotesLoading}>
+                  {quotesLoading ? "Refreshing..." : "Refresh"}
                 </button>
               </div>
             </div>
@@ -579,57 +459,6 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
           {!toolbarCollapsed && (
             <div style={toolbarSecondaryRowStyle}>
               <div style={toolbarSecondaryGroupStyle}>
-                {optionsControls.expiryScope === "fixed-horizon" && (
-                  <div style={toolbarControlGroupStyle}>
-                    <label style={labelStyle}>Horizon</label>
-                    <select value={optionsControls.horizonMode} onChange={(e) => setOptionsControls((p) => ({ ...p, horizonMode: e.target.value as HorizonMode }))} style={compactNarrowSelectStyle}>
-                      <option value="1m">1 Month</option><option value="6m">6 Months</option><option value="1y">1 Year</option>
-                    </select>
-                  </div>
-                )}
-                <div style={toolbarControlGroupStyle}>
-                  <label style={labelStyle}>Option Side</label>
-                  <select value={optionsControls.optionSide} onChange={(e) => setOptionsControls((p) => ({ ...p, optionSide: e.target.value as OptionSide }))} style={compactSelectStyle}>
-                    <option value="calls">Calls</option><option value="puts">Puts</option><option value="both">Both</option>
-                  </select>
-                </div>
-                <div style={toolbarControlGroupStyle}>
-                  <label style={labelStyle}>Premium Mode</label>
-                  <select value={optionsControls.premiumMode} onChange={(e) => setOptionsControls((p) => ({ ...p, premiumMode: e.target.value as PremiumMode }))} style={compactSelectStyle}>
-                    <option value="mid">Mid</option><option value="last">Last</option><option value="bid">Bid</option><option value="ask">Ask</option>
-                  </select>
-                </div>
-                <div style={toolbarControlGroupStyle}>
-                  <label style={labelStyle}>Target Mode</label>
-                  <select value={optionsControls.targetMode} onChange={(e) => setOptionsControls((p) => ({ ...p, targetMode: e.target.value as TargetMode }))} style={compactSelectStyle}>
-                    <option value="delta">Delta</option><option value="percent-otm">% OTM</option>
-                  </select>
-                </div>
-                {optionsControls.targetMode === "delta" ? (
-                  <div style={toolbarControlGroupStyle}>
-                    <label style={labelStyle}>Target Delta</label>
-                    <input type="number" step="0.01" min="0" max="1" value={optionsControls.targetDelta} onChange={(e) => setOptionsControls((p) => ({ ...p, targetDelta: e.target.value }))} style={{ ...inputStyle, width: "140px", minWidth: "140px", padding: "12px 14px" }} placeholder="0.30" />
-                  </div>
-                ) : (
-                  <div style={toolbarControlGroupStyle}>
-                    <label style={labelStyle}>Target % OTM</label>
-                    <input type="number" step="0.1" min="0" value={optionsControls.targetPercentOtm} onChange={(e) => setOptionsControls((p) => ({ ...p, targetPercentOtm: e.target.value }))} style={{ ...inputStyle, width: "140px", minWidth: "140px", padding: "12px 14px" }} placeholder="5" />
-                  </div>
-                )}
-                {optionsControls.expiryScope === "manual" && (
-                  <div style={toolbarControlGroupStyle}>
-                    <label style={labelStyle}>Expiry <span style={{ marginLeft: "6px", color: "#64748b", fontSize: "11px" }}>{availableExpiries.length > 0 ? `(${availableExpiries.length})` : expiryOptionsLoading ? "(loading...)" : ""}</span></label>
-                    {availableExpiries.length > 0 ? (
-                      <select value={optionsControls.manualExpiry || ""} onChange={(e) => setOptionsControls((p) => ({ ...p, manualExpiry: e.target.value }))} style={compactSelectStyle}>
-                        {availableExpiries.map((ex) => <option key={ex} value={ex}>{ex}</option>)}
-                      </select>
-                    ) : expiryOptionsLoading ? <select disabled style={compactSelectStyle}><option>Loading expiries...</option></select>
-                      : <select disabled style={compactSelectStyle}><option>No expiries found</option></select>}
-                  </div>
-                )}
-              </div>
-
-              <div style={toolbarSecondaryGroupStyle}>
                 <div style={toolbarMenuAnchorStyle} ref={columnsMenuRef}>
                   <div style={toolbarControlGroupStyle}>
                     <label style={labelStyle}>Columns</label>
@@ -637,7 +466,7 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
                   </div>
                   {openMenu === "columns" && (
                     <div style={floatingMenuStyleClampedWide}>
-                      <div style={floatingMenuHeaderStyle}><div><h3 style={floatingMenuTitleStyle}>Visible Columns</h3><p style={floatingMenuSubtitleStyle}>Choose which columns appear in the options workspace</p></div></div>
+                      <div style={floatingMenuHeaderStyle}><div><h3 style={floatingMenuTitleStyle}>Visible Columns</h3><p style={floatingMenuSubtitleStyle}>Choose which columns appear in the workspace</p></div></div>
                       <div style={floatingScrollableContentStyleWide}>
                         {renderColumnsMenuSection("Core", coreColumnOptions)}
                         {renderColumnsMenuSection("Options", optionsColumnOptions)}
@@ -657,7 +486,7 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
                     <div style={floatingMenuStyleClamped}>
                       <div style={floatingMenuHeaderStyle}><div><h3 style={floatingMenuTitleStyle}>Sort Rows</h3><p style={floatingMenuSubtitleStyle}>Choose how the workspace is ordered</p></div></div>
                       <div style={floatingScrollableContentStyle}><div style={sortOptionsGridStyle}>
-                        {[["symbol-asc","Symbol A → Z"],["symbol-desc","Symbol Z → A"],["price-asc","Price Low → High"],["price-desc","Price High → Low"],["strike-asc","Strike Low → High"],["strike-desc","Strike High → Low"],["expiry-asc","Expiry Near → Far"],["expiry-desc","Expiry Far → Near"],["premium-asc","Premium Low → High"],["premium-desc","Premium High → Low"],["returnPercent-asc","Return % Low → High"],["returnPercent-desc","Return % High → Low"],["delta-asc","Delta Low → High"],["delta-desc","Delta High → Low"],["change-asc","Change Low → High"],["change-desc","Change High → Low"],["changePercent-asc","Change % Low → High"],["changePercent-desc","Change % High → Low"],["updated-asc","Updated Oldest → Newest"],["updated-desc","Updated Newest → Oldest"]].map(([v, l]) => (
+                        {[["symbol-asc","Symbol A → Z"],["symbol-desc","Symbol Z → A"],["price-asc","Price Low → High"],["price-desc","Price High → Low"],["strike-asc","Strike Low → High"],["strike-desc","Strike High → Low"],["premium-asc","Premium Low → High"],["premium-desc","Premium High → Low"],["returnPercent-asc","Return % Low → High"],["returnPercent-desc","Return % High → Low"],["delta-asc","Delta Low → High"],["delta-desc","Delta High → Low"],["updated-asc","Updated Oldest → Newest"],["updated-desc","Updated Newest → Oldest"]].map(([v, l]) => (
                           <button key={v} type="button" style={sortOption === v ? sortOptionActiveStyle : sortOptionButtonStyle} onClick={() => { setSortOption(v); setOpenMenu(null); }}>{l}</button>
                         ))}
                       </div></div>
@@ -672,11 +501,10 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
                   </div>
                   {openMenu === "filter" && (
                     <div style={floatingMenuStyleClamped}>
-                      <div style={floatingMenuHeaderStyle}><div><h3 style={floatingMenuTitleStyle}>Filters</h3><p style={floatingMenuSubtitleStyle}>Narrow the workspace using simple client-side rules</p></div></div>
+                      <div style={floatingMenuHeaderStyle}><div><h3 style={floatingMenuTitleStyle}>Filters</h3><p style={floatingMenuSubtitleStyle}>Narrow the workspace</p></div></div>
                       <div style={floatingScrollableContentStyle}><div style={filtersPanelGridStyle}>
                         <div style={fieldGroupFullStyle}><label style={labelStyle}>Price greater than</label><input type="number" step="0.01" value={filters.minPrice} onChange={(e) => setFilters((p) => ({ ...p, minPrice: e.target.value }))} style={inputStyle} placeholder="Example: 20" /></div>
-                        <div style={fieldGroupFullStyle}><label style={labelStyle}>Change % greater than</label><input type="number" step="0.01" value={filters.minChangePercent} onChange={(e) => setFilters((p) => ({ ...p, minChangePercent: e.target.value }))} style={inputStyle} placeholder="Example: 1.5" /></div>
-                        <div style={fieldGroupFullStyle}><label style={labelStyle}>Status</label><select value={filters.status} onChange={(e) => setFilters((p) => ({ ...p, status: e.target.value }))} style={selectStyle}><option value="all">All</option><option value="ok">ok</option><option value="delayed">delayed</option><option value="error">error</option></select></div>
+                        <div style={fieldGroupFullStyle}><label style={labelStyle}>Status</label><select value={filters.status} onChange={(e) => setFilters((p) => ({ ...p, status: e.target.value }))} style={selectStyle}><option value="all">All</option><option value="ok">ok</option><option value="pending">pending</option><option value="error">error</option></select></div>
                       </div></div>
                       <div style={floatingMenuFooterStyle}>
                         <button type="button" style={secondaryButtonStyle} onClick={() => setFilters(defaultFilters)}>Clear Filters</button>
@@ -688,7 +516,7 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
 
                 <div style={toolbarControlGroupStyle}>
                   <label style={labelStyle}>Reset</label>
-                  <button type="button" style={secondaryButtonStyle} onClick={() => { setVisibleColumns(defaultVisibleColumns); setColumnOrder(defaultColumnOrder); setFilters(defaultFilters); setSortOption("symbol-asc"); setOptionsControls(defaultOptionsControls); setOptionsBySymbol({}); setAvailableExpiries([]); setExpiryOptionsLoading(false); setActiveViewId("default"); setOpenMenu(null); }} disabled={!selectedListId}>Reset</button>
+                  <button type="button" style={secondaryButtonStyle} onClick={() => { setVisibleColumns(defaultVisibleColumns); setColumnOrder(defaultColumnOrder); setFilters(defaultFilters); setSortOption("symbol-asc"); setOptionsControls(defaultOptionsControls); setActiveViewId("default"); setOpenMenu(null); }} disabled={!selectedListId}>Reset</button>
                 </div>
               </div>
             </div>
@@ -696,19 +524,17 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
         </div>
       </Panel>
 
-      {(listsError || quotesError || optionsError) && (
+      {(listsError || quotesError) && (
         <Panel><div style={{ display: "flex", flexDirection: "column", gap: "10px" }}>
           {listsError && <p style={{ margin: 0, color: "#dc2626", fontWeight: 600 }}>Error: {listsError}</p>}
           {quotesError && <p style={{ margin: 0, color: "#dc2626", fontWeight: 600 }}>Error: {quotesError}</p>}
-          {optionsError && <p style={{ margin: 0, color: "#dc2626", fontWeight: 600 }}>Error: {optionsError}</p>}
         </div></Panel>
       )}
 
       <Panel>
         <div style={panelHeaderStyle}>
-          <div><h2 style={panelTitleStyle}>Live Watchlist</h2><p style={panelSubtitleStyle}>Quotes refresh every 30 seconds • options refresh every 60 seconds</p></div>
+          <div><h2 style={panelTitleStyle}>Live Watchlist</h2><p style={panelSubtitleStyle}>Data pre-fetched every 60 seconds • loads instantly from cache</p></div>
           <div style={panelHeaderActionsStyle}>
-            <div style={smallMutedDarkStyle}>{optionsLoading ? "Loading options..." : "Options live"}</div>
             <button type="button" style={iconButtonStyle} onMouseEnter={(e) => { e.currentTarget.style.background = "#f8fafc"; e.currentTarget.style.borderColor = "#94a3b8"; }} onMouseLeave={(e) => { e.currentTarget.style.background = "#ffffff"; e.currentTarget.style.borderColor = "#e2e8f0"; }} onClick={() => {
               const rawName = window.prompt("Save view as", "New View"); const name = rawName?.trim(); if (!name) return;
               const existing = savedViews.find((v) => v.name.toLowerCase() === name.toLowerCase());
@@ -728,7 +554,7 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
         <div style={{ marginBottom: "12px", color: "#64748b", fontSize: "12px", fontWeight: 700 }}>Drag column headers to reorder them.</div>
 
         {!selectedListId ? <p style={{ margin: 0 }}>Select a watchlist to load quotes.</p>
-          : quotesLoading && quotes.length === 0 ? <p style={{ margin: 0 }}>Loading quotes...</p>
+          : quotesLoading && quotes.length === 0 ? <p style={{ margin: 0 }}>Loading...</p>
           : !Array.isArray(quotes) || quotes.length === 0 ? <p style={{ margin: 0 }}>No quotes found for this watchlist.</p>
           : filteredAndSortedQuotes.length === 0 ? <p style={{ margin: 0 }}>No rows match the current filters.</p>
           : (
@@ -942,7 +768,7 @@ const contentInnerStyle: React.CSSProperties = { width: "100%", maxWidth: "1800p
 const headerRowStyle: React.CSSProperties = { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "26px", gap: "16px", flexWrap: "wrap" };
 const pageTitleStyle: React.CSSProperties = { margin: 0, fontSize: "36px", fontWeight: 900, letterSpacing: "-0.03em" };
 const pageSubtitleStyle: React.CSSProperties = { margin: "8px 0 0 0", color: "#64748b", fontSize: "15px" };
-const panelStyle: React.CSSProperties = { background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: "20px", padding: "22px", boxShadow: "0 8px 24px rgba(15,23,42,0.05)" };
+const panelStyle: React.CSSProperties = { background: "#ffffff", border: "1px solid #e2e8f0", borderRadius: "20px", padding: "22px", boxShadow: "0 8px 24px rgba(15,23,42,0.05)", marginBottom: "16px" };
 const panelHeaderStyle: React.CSSProperties = { display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "18px" };
 const panelHeaderActionsStyle: React.CSSProperties = { display: "flex", alignItems: "center", gap: "10px", flexWrap: "wrap" };
 const iconImageStyle: React.CSSProperties = { width: "16px", height: "16px" };
@@ -970,7 +796,7 @@ const bodyCellStyle: React.CSSProperties = { padding: "10px 12px", borderBottom:
 const statusBadgeStyle: React.CSSProperties = { display: "inline-block", padding: "6px 10px", borderRadius: "999px", fontWeight: 800, fontSize: "12px", textTransform: "uppercase" };
 const moneynessBadgeStyle: React.CSSProperties = { display: "inline-block", padding: "6px 10px", borderRadius: "999px", fontWeight: 800, fontSize: "12px", textTransform: "uppercase" };
 const optionSideBadgeStyle: React.CSSProperties = { display: "inline-block", padding: "5px 10px", borderRadius: "999px", fontWeight: 800, fontSize: "12px", background: "#e2e8f0", color: "#334155" };
-const toolbarShellStyle: React.CSSProperties = { display: "flex", flexDirection: "column", gap: "14px", minHeight: "108px" };
+const toolbarShellStyle: React.CSSProperties = { display: "flex", flexDirection: "column", gap: "14px", minHeight: "72px" };
 const toolbarPrimaryRowStyle: React.CSSProperties = { display: "flex", justifyContent: "space-between", alignItems: "flex-end", gap: "16px", flexWrap: "wrap" };
 const toolbarPrimaryLeftStyle: React.CSSProperties = { display: "flex", gap: "10px", alignItems: "flex-end", flexWrap: "wrap", minHeight: "72px", flex: 1 };
 const toolbarPrimaryActionsStyle: React.CSSProperties = { display: "flex", alignItems: "flex-end", minHeight: "72px" };
@@ -992,7 +818,6 @@ const sortOptionButtonStyle: React.CSSProperties = { border: "1px solid #e2e8f0"
 const sortOptionActiveStyle: React.CSSProperties = { ...sortOptionButtonStyle, background: "#0f172a", color: "#ffffff", border: "1px solid #0f172a" };
 const toolbarControlGroupStyle: React.CSSProperties = { display: "flex", flexDirection: "column", gap: "8px", minWidth: 0, minHeight: "72px", justifyContent: "flex-end" };
 const compactSelectStyle: React.CSSProperties = { padding: "12px 14px", borderRadius: "14px", border: "1px solid #cbd5e1", fontSize: "14px", background: "#fff", outline: "none", boxShadow: "inset 0 1px 2px rgba(15,23,42,0.03)", width: "220px", minWidth: "220px" };
-const compactNarrowSelectStyle: React.CSSProperties = { padding: "12px 14px", borderRadius: "14px", border: "1px solid #cbd5e1", fontSize: "14px", background: "#fff", outline: "none", boxShadow: "inset 0 1px 2px rgba(15,23,42,0.03)", width: "160px", minWidth: "160px" };
 const toolbarRightInfoStyle: React.CSSProperties = { minHeight: "48px", padding: "12px 14px", borderRadius: "14px", background: "#f8fafc", border: "1px solid #e2e8f0", display: "flex", flexDirection: "column", justifyContent: "center" };
 const toolbarRightValueStyle: React.CSSProperties = { fontWeight: 800, color: "#0f172a", fontSize: "14px" };
 const smallMutedDarkStyle: React.CSSProperties = { color: "#64748b", fontSize: "12px", marginBottom: "4px" };

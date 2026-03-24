@@ -1,0 +1,33 @@
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI0IiwiaWF0IjoxNzczNTAxNzEzLCJleHAiOjE3NzM1ODgxMTN9.zMkO-g88FzWCqRCQJhkWrydz4kxNLf8iwE4jOJe_UVg
+
+http://127.0.0.1:8000/docs
+
+uvicorn app.main:app --reload
+
+
+{
+  "email": "dekeworrell@shaw.ca",
+  "password": "Index302030!"
+}
+
+
+eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiI0IiwiaWF0IjoxNzczNTA1NDY5LCJleHAiOjE3NzM1OTE4Njl9.N7a4W6x2nKqylbrsdZkLcRMG5NCN55DuJW9FFZ6p8MM
+
+VERn
+
+venv\Scripts\activate
+
+Run Frontend
+cd C:\Users\dekew\OneDrive\Desktop\options-dashboard\frontend
+npm run dev
+
+
+Local host 
+http://localhost:5173
+
+
+SAVE GITHUB
+
+git add .
+git commit -m "describe what you changed"
+git push
