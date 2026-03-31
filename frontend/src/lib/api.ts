@@ -207,16 +207,30 @@ export async function getTickers(listId: number): Promise<TickerItem[]> {
   return handleResponse<TickerItem[]>(response);
 }
 
-export async function getWatchlistQuotes(listId: number): Promise<WatchlistQuote[]> {
-  const response = await fetch(`${API_BASE}/lists/${listId}/quotes`, {
-    method: "GET",
-    headers: getAuthHeaders(),
-  });
-  const data = await handleResponse<{
-    list_id: number;
-    count: number;
-    quotes: WatchlistQuote[];
-  }>(response);
+export async function getWatchlistQuotes(
+  listId: number,
+  params?: {
+    expiry_scope?: string;
+    manual_expiry?: string;
+    option_side?: string;
+    target_mode?: string;
+    target_delta?: number;
+    target_percent_otm?: number;
+    premium_mode?: string;
+  }
+): Promise<WatchlistQuote[]> {
+  const searchParams = new URLSearchParams();
+  if (params?.expiry_scope) searchParams.set("expiry_scope", params.expiry_scope);
+  if (params?.manual_expiry) searchParams.set("manual_expiry", params.manual_expiry);
+  if (params?.option_side) searchParams.set("option_side", params.option_side);
+  if (params?.target_mode) searchParams.set("target_mode", params.target_mode);
+  if (params?.target_delta != null) searchParams.set("target_delta", String(params.target_delta));
+  if (params?.target_percent_otm != null) searchParams.set("target_percent_otm", String(params.target_percent_otm));
+  if (params?.premium_mode) searchParams.set("premium_mode", params.premium_mode);
+
+  const url = `${API_BASE}/lists/${listId}/quotes?${searchParams.toString()}`;
+  const response = await fetch(url, { method: "GET", headers: getAuthHeaders() });
+  const data = await handleResponse<{ list_id: number; count: number; quotes: WatchlistQuote[] }>(response);
   return Array.isArray(data.quotes) ? data.quotes : [];
 }
 

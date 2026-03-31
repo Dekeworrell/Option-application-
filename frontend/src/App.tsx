@@ -256,7 +256,15 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
   async function loadQuotesForList(listId: number): Promise<void> {
     setQuotesLoading(true); setQuotesError("");
     try {
-      const data = await getWatchlistQuotes(listId);
+      const data = await getWatchlistQuotes(listId, {
+        expiry_scope: optionsControls.expiryScope,
+        manual_expiry: optionsControls.manualExpiry || undefined,
+        option_side: optionsControls.optionSide,
+        target_mode: optionsControls.targetMode,
+        target_delta: optionsControls.targetMode === "delta" ? parseFloat(optionsControls.targetDelta) : undefined,
+        target_percent_otm: optionsControls.targetMode === "percent-otm" ? parseFloat(optionsControls.targetPercentOtm) : undefined,
+        premium_mode: optionsControls.premiumMode,
+      });
       setQuotes(Array.isArray(data) ? data : []);
     } catch (err) {
       setQuotesError(err instanceof Error ? err.message : "Failed to load quotes");
@@ -459,6 +467,62 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
           {!toolbarCollapsed && (
             <div style={toolbarSecondaryRowStyle}>
               <div style={toolbarSecondaryGroupStyle}>
+
+                {/* Expiry */}
+                <div style={toolbarControlGroupStyle}>
+                  <label style={labelStyle}>Expiry</label>
+                  <select value={optionsControls.expiryScope} onChange={(e) => setOptionsControls((p) => ({ ...p, expiryScope: e.target.value as ExpiryScope }))} style={compactSelectStyle}>
+                    <option value="weekly">Weekly</option>
+                    <option value="monthly">Monthly</option>
+                    <option value="near">Nearest</option>
+                    <option value="far">Farthest</option>
+                    <option value="manual">Manual</option>
+                  </select>
+                </div>
+
+                {optionsControls.expiryScope === "manual" && (
+                  <div style={toolbarControlGroupStyle}>
+                    <label style={labelStyle}>Date</label>
+                    <input type="date" value={optionsControls.manualExpiry} onChange={(e) => setOptionsControls((p) => ({ ...p, manualExpiry: e.target.value }))} style={{ ...compactSelectStyle, width: "160px" }} />
+                  </div>
+                )}
+
+                {/* Side */}
+                <div style={toolbarControlGroupStyle}>
+                  <label style={labelStyle}>Side</label>
+                  <select value={optionsControls.optionSide} onChange={(e) => setOptionsControls((p) => ({ ...p, optionSide: e.target.value as OptionSide }))} style={compactSelectStyle}>
+                    <option value="calls">Calls</option>
+                    <option value="puts">Puts</option>
+                    <option value="both">Both</option>
+                  </select>
+                </div>
+
+                {/* Target */}
+                <div style={toolbarControlGroupStyle}>
+                  <label style={labelStyle}>Target</label>
+                  <select value={optionsControls.targetMode} onChange={(e) => setOptionsControls((p) => ({ ...p, targetMode: e.target.value as TargetMode }))} style={compactSelectStyle}>
+                    <option value="delta">Delta</option>
+                    <option value="percent-otm">% OTM</option>
+                  </select>
+                </div>
+
+                <div style={toolbarControlGroupStyle}>
+                  <label style={labelStyle}>{optionsControls.targetMode === "delta" ? "Delta" : "% OTM"}</label>
+                  <input type="number" step={optionsControls.targetMode === "delta" ? "0.05" : "1"} min={optionsControls.targetMode === "delta" ? "0.05" : "1"} max={optionsControls.targetMode === "delta" ? "0.95" : "50"} value={optionsControls.targetMode === "delta" ? optionsControls.targetDelta : optionsControls.targetPercentOtm} onChange={(e) => setOptionsControls((p) => optionsControls.targetMode === "delta" ? ({ ...p, targetDelta: e.target.value }) : ({ ...p, targetPercentOtm: e.target.value }))} style={{ ...compactSelectStyle, width: "100px" }} />
+                </div>
+
+                {/* Premium Mode */}
+                <div style={toolbarControlGroupStyle}>
+                  <label style={labelStyle}>Premium</label>
+                  <select value={optionsControls.premiumMode} onChange={(e) => setOptionsControls((p) => ({ ...p, premiumMode: e.target.value as PremiumMode }))} style={compactSelectStyle}>
+                    <option value="mid">Mid</option>
+                    <option value="bid">Bid</option>
+                    <option value="ask">Ask</option>
+                    <option value="last">Last</option>
+                  </select>
+                </div>
+
+                {/* Columns */}
                 <div style={toolbarMenuAnchorStyle} ref={columnsMenuRef}>
                   <div style={toolbarControlGroupStyle}>
                     <label style={labelStyle}>Columns</label>
@@ -477,6 +541,7 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
                   )}
                 </div>
 
+                {/* Sort */}
                 <div style={toolbarMenuAnchorStyle} ref={sortMenuRef}>
                   <div style={toolbarControlGroupStyle}>
                     <label style={labelStyle}>Sort</label>
@@ -494,6 +559,7 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
                   )}
                 </div>
 
+                {/* Filter */}
                 <div style={toolbarMenuAnchorStyle} ref={filterMenuRef}>
                   <div style={toolbarControlGroupStyle}>
                     <label style={labelStyle}>Filter</label>
@@ -514,10 +580,12 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
                   )}
                 </div>
 
+                {/* Reset */}
                 <div style={toolbarControlGroupStyle}>
                   <label style={labelStyle}>Reset</label>
                   <button type="button" style={secondaryButtonStyle} onClick={() => { setVisibleColumns(defaultVisibleColumns); setColumnOrder(defaultColumnOrder); setFilters(defaultFilters); setSortOption("symbol-asc"); setOptionsControls(defaultOptionsControls); setActiveViewId("default"); setOpenMenu(null); }} disabled={!selectedListId}>Reset</button>
                 </div>
+
               </div>
             </div>
           )}
