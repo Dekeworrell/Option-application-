@@ -55,7 +55,7 @@ async def startup_event():
     # Then run every 60 seconds
     scheduler.add_job(
         refresh_market_cache,
-        trigger=IntervalTrigger(minutes=15),
+        trigger=IntervalTrigger(seconds=60),
         misfire_grace_time=30,
         id="market_cache_refresh",
         replace_existing=True,

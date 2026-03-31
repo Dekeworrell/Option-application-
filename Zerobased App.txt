@@ -1,0 +1,61 @@
+Zerobased App
+
+Web is waiting on http://localhost:8081
+Metro waiting on exp://192.168.4.52:8081
+
+Supabase Pase word - Index302030!
+
+Project URL
+https://tkldjaqcovjdiwjpnphf.supabase.co
+Publishable key:
+sb_publishable_ly3sjXcnuv5qnQl2YWa7ww_KiWFLMpm
+
+Run web 
+npx expo start --tunnel
+
+
+
+Zerobased notes:
+
+Dashboard: 
+- Expenses should be collapsed so the screen isn't a mile long, maybe even a double row to keep it shorter. If collapse the staus bar would then change to total budget spend as they would all collapse down to the one expense line. or does this not make sense?
+
+
+Accounts page;
+- Should add below accounts
+	- RESP
+	- Mortgage
+	- HELOC
+	- Line of credit
+
+Expense Page
+- Add below accounts
+	- Cable TV
+	- Life insurance
+Change the stat card to show bi-weekly like you did in the budget page throughout the app. 
+
+Assignment page:
+
+We need to think about this. if there is money left over need an option to add it to investment accounts or mortgage and make those expenses that should be paid first as this is one of the biggest keys to building wealth.
+
+
+NEW Notes:
+-Master toggle for Monthly and bi-weekly expenses. 
+-other, entertainment, loan repayment in expenses cant disappear as you may need a few more and rename them.
+-Need loan repayment added and it also cant disappear. 
+-If a user has to go back in the onboarding it should save their progress so they dont have to redo it. 
+-The stats block doesn't turn green when you hit 0$ on the budget. 
+-Cant rename the budget in the edit budget screen 
+-When clicking manage accounts under settings it crashed the web page. 
+-I was using YNAB and I like how they walk the customer through the setup and explain things along the way. I wonder if we should do the same start with Hello, get some basic information from them to use later to help them reach their goals and then walk them through onboarding such as "select the basic account you have" (Savings, Checkings, etc. Then Tell us what debt accounts you have (Line of credit, Credit card, HELOC, etc. then tell us what investment account you have, ( RRSP, RESP, Margin, TSFA, FHSA, etc ), I feel that why we can list all available account without overcrowding or overwhelming the user because we are doing it in sections. Thoughts? of course this can all be edited later in the dashboard and accounts removed or added. 
+
+
+npx supabase secrets set SUPABASE_SERVICE_ROLE_KEY=sb_secret_5NJ51a7itcHZzMowhAV-iQ_pulj6j1s --project-ref tkldjaqcovjdiwjpnphf
+
+
+Notes- 
+
+-Should be able to add multiple vehicles. 
+
+-on the assignment page, there should be an add button in each category. once pressed it brings up the list of chips so users can add items they forgot right there rather go back. 
+
