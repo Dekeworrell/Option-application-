@@ -286,7 +286,7 @@ def get_list_quotes(
                 "last_price": row.underlying_price,
                 "change": None,
                 "change_percent": None,
-                "updated_at": row.fetched_at.isoformat() if row.fetched_at else None,
+                "updated_at": row.fetched_at.strftime("%Y-%m-%dT%H:%M:%SZ") if row.fetched_at else None,
                 "status": "ok",
                 "error": None,
                 # Option data
