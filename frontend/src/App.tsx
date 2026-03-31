@@ -237,11 +237,10 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
   useEffect(() => { localStorage.setItem(SAVED_VIEWS_STORAGE_KEY, JSON.stringify(savedViews)); }, [savedViews]);
   useEffect(() => { localStorage.setItem(TOOLBAR_COLLAPSED_STORAGE_KEY, JSON.stringify(toolbarCollapsed)); }, [toolbarCollapsed]);
   useEffect(() => {
-    setVisibleColumns(defaultVisibleColumns); setColumnOrder(defaultColumnOrder); setFilters(defaultFilters);
-    setSortOption("symbol-asc"); setOptionsControls(defaultOptionsControls); setQuotes([]);
-    setQuotesError(""); setOpenMenu(null); setActiveViewId("default");
-    setDraggedColumnKey(null); setDragOverColumnKey(null);
-  }, [selectedListId]);
+  setQuotes([]);
+  setQuotesError(""); setOpenMenu(null);
+  setDraggedColumnKey(null); setDragOverColumnKey(null);
+}, [selectedListId]);
 
   useEffect(() => {
     function handleDocumentClick(event: MouseEvent) {
@@ -442,10 +441,14 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
                     <div style={floatingMenuHeaderStyle}><h3 style={floatingMenuTitleStyle}>Saved Views</h3><p style={floatingMenuSubtitleStyle}>Quickly switch between dashboard layouts</p></div>
                     <div style={floatingScrollableContentStyle}><div style={sortOptionsGridStyle}>
                       {savedViews.map((v) => (
-                        <button key={v.id} type="button" style={activeViewId === v.id ? sortOptionActiveStyle : sortOptionButtonStyle} onClick={() => { setVisibleColumns(v.columns); setColumnOrder(normalizeColumnOrder(v.columnOrder ?? defaultColumnOrder)); setFilters(v.filters); setSortOption(v.sort); setOptionsControls({ ...defaultOptionsControls, ...(v.optionsControls ?? {}) }); setActiveViewId(v.id); setOpenMenu(null); }}>{v.name}</button>
+                        <div key={v.id} style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+                          <button type="button" style={{ ...(activeViewId === v.id ? sortOptionActiveStyle : sortOptionButtonStyle), flex: 1 }} onClick={() => { setVisibleColumns(v.columns); setColumnOrder(normalizeColumnOrder(v.columnOrder ?? defaultColumnOrder)); setFilters(v.filters); setSortOption(v.sort); setOptionsControls({ ...defaultOptionsControls, ...(v.optionsControls ?? {}) }); setActiveViewId(v.id); setOpenMenu(null); }}>{v.name}</button>
+                          {v.id !== "default" && (
+                            <button type="button" style={{ border: "1px solid #fecaca", borderRadius: "8px", background: "#fff", color: "#991b1b", fontWeight: 800, fontSize: "13px", padding: "6px 10px", cursor: "pointer" }} onClick={() => { if (window.confirm(`Delete view "${v.name}"?`)) { setSavedViews(p => p.filter(x => x.id !== v.id)); if (activeViewId === v.id) setActiveViewId("default"); } }}>🗑️</button>
+                          )}
+                        </div>
                       ))}
                     </div></div>
-                    <div style={floatingMenuFooterStyle}><button type="button" style={secondaryButtonStyle} onClick={() => setOpenMenu(null)}>Manage Views</button></div>
                   </div>
                 )}
               </div>
@@ -572,10 +575,6 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
                         <div style={fieldGroupFullStyle}><label style={labelStyle}>Price greater than</label><input type="number" step="0.01" value={filters.minPrice} onChange={(e) => setFilters((p) => ({ ...p, minPrice: e.target.value }))} style={inputStyle} placeholder="Example: 20" /></div>
                         <div style={fieldGroupFullStyle}><label style={labelStyle}>Status</label><select value={filters.status} onChange={(e) => setFilters((p) => ({ ...p, status: e.target.value }))} style={selectStyle}><option value="all">All</option><option value="ok">ok</option><option value="pending">pending</option><option value="error">error</option></select></div>
                       </div></div>
-                      <div style={floatingMenuFooterStyle}>
-                        <button type="button" style={secondaryButtonStyle} onClick={() => setFilters(defaultFilters)}>Clear Filters</button>
-                        <div style={toolbarRightInfoStyle}><div style={smallMutedDarkStyle}>Matching rows</div><div style={toolbarRightValueStyle}>{filteredAndSortedQuotes.length}</div></div>
-                      </div>
                     </div>
                   )}
                 </div>
