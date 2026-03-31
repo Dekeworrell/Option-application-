@@ -228,19 +228,33 @@ function WatchlistsWorkspacePage({ lists, selectedListId, setSelectedListId, lis
       }));
     } catch { return [defaultView]; }
   });
-  const [activeViewId, setActiveViewId] = useState<string>("default");
+  const [activeViewId, setActiveViewId] = useState<string>(() => {
+  try { return localStorage.getItem("options-dashboard-active-view") ?? "default"; }
+  catch { return "default"; }
+  });
   const columnsMenuRef = useRef<HTMLDivElement | null>(null);
   const filterMenuRef = useRef<HTMLDivElement | null>(null);
   const sortMenuRef = useRef<HTMLDivElement | null>(null);
   const viewMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => { localStorage.setItem(SAVED_VIEWS_STORAGE_KEY, JSON.stringify(savedViews)); }, [savedViews]);
+  useEffect(() => { localStorage.setItem("options-dashboard-active-view", activeViewId); }, [activeViewId]);
   useEffect(() => { localStorage.setItem(TOOLBAR_COLLAPSED_STORAGE_KEY, JSON.stringify(toolbarCollapsed)); }, [toolbarCollapsed]);
   useEffect(() => {
   setQuotes([]);
   setQuotesError(""); setOpenMenu(null);
   setDraggedColumnKey(null); setDragOverColumnKey(null);
 }, [selectedListId]);
+  useEffect(() => {
+    const activeView = savedViews.find(v => v.id === activeViewId);
+    if (activeView) {
+      setVisibleColumns(activeView.columns);
+      setColumnOrder(normalizeColumnOrder(activeView.columnOrder ?? defaultColumnOrder));
+      setFilters(activeView.filters);
+      setSortOption(activeView.sort);
+      setOptionsControls({ ...defaultOptionsControls, ...(activeView.optionsControls ?? {}) });
+    }
+  }, []);
 
   useEffect(() => {
     function handleDocumentClick(event: MouseEvent) {
@@ -877,7 +891,6 @@ const floatingMenuStyleClampedWide: React.CSSProperties = { ...floatingMenuStyle
 const floatingMenuHeaderStyle: React.CSSProperties = { marginBottom: "14px" };
 const floatingMenuTitleStyle: React.CSSProperties = { margin: 0, fontSize: "18px", fontWeight: 900, letterSpacing: "-0.02em", color: "#0f172a" };
 const floatingMenuSubtitleStyle: React.CSSProperties = { margin: "6px 0 0 0", color: "#64748b", fontSize: "13px" };
-const floatingMenuFooterStyle: React.CSSProperties = { marginTop: "16px", display: "flex", gap: "12px", flexWrap: "wrap", alignItems: "center" };
 const floatingScrollableContentStyle: React.CSSProperties = { maxHeight: "360px", overflowY: "auto", overflowX: "hidden", paddingRight: "4px" };
 const floatingScrollableContentStyleWide: React.CSSProperties = { ...floatingScrollableContentStyle, maxHeight: "420px" };
 const sortOptionsGridStyle: React.CSSProperties = { display: "grid", gridTemplateColumns: "1fr", gap: "10px" };
@@ -885,9 +898,7 @@ const sortOptionButtonStyle: React.CSSProperties = { border: "1px solid #e2e8f0"
 const sortOptionActiveStyle: React.CSSProperties = { ...sortOptionButtonStyle, background: "#0f172a", color: "#ffffff", border: "1px solid #0f172a" };
 const toolbarControlGroupStyle: React.CSSProperties = { display: "flex", flexDirection: "column", gap: "8px", minWidth: 0, minHeight: "72px", justifyContent: "flex-end" };
 const compactSelectStyle: React.CSSProperties = { padding: "12px 14px", borderRadius: "14px", border: "1px solid #cbd5e1", fontSize: "14px", background: "#fff", outline: "none", boxShadow: "inset 0 1px 2px rgba(15,23,42,0.03)", width: "220px", minWidth: "220px" };
-const toolbarRightInfoStyle: React.CSSProperties = { minHeight: "48px", padding: "12px 14px", borderRadius: "14px", background: "#f8fafc", border: "1px solid #e2e8f0", display: "flex", flexDirection: "column", justifyContent: "center" };
-const toolbarRightValueStyle: React.CSSProperties = { fontWeight: 800, color: "#0f172a", fontSize: "14px" };
-const smallMutedDarkStyle: React.CSSProperties = { color: "#64748b", fontSize: "12px", marginBottom: "4px" };
+
 const watchlistTableShellStyle: React.CSSProperties = { border: "1px solid #e2e8f0", borderRadius: "16px", overflow: "hidden", background: "#ffffff" };
 const watchlistTableWrapStyle: React.CSSProperties = { overflowX: "auto", overflowY: "auto", maxHeight: "640px" };
 const stickyHeaderCellStyle: React.CSSProperties = { textAlign: "left", padding: "12px", background: "#f8fafc", color: "#475569", fontSize: "12px", fontWeight: 800, borderBottom: "1px solid #e2e8f0", position: "sticky", top: 0, zIndex: 1, whiteSpace: "nowrap" };
